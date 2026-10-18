@@ -95,7 +95,8 @@ struct UpdateSheet: View {
 
         Task {
             do {
-                // Never returns: the app quits so the installer can swap it.
+                // Returns once the swap is scheduled; the app quits right after,
+                // so the sheet stays on "Installing and restarting…".
                 try await Updater.downloadAndInstall(release) { fraction in
                     Task { @MainActor in progress = fraction }
                 }

@@ -143,7 +143,7 @@ public enum Updater {
     public static func downloadAndInstall(
         _ release: Release,
         progress: @escaping @Sendable (Double) -> Void
-    ) async throws -> Never {
+    ) async throws {
         guard let downloadURL = release.downloadURL else { throw UpdateError.noAsset }
 
         let bundleURL = Bundle.main.bundleURL
@@ -243,33 +243,40 @@ public enum Updater {
         newBundle: URL,
         currentBundle: URL,
         workDirectory: URL
-    ) throws -> Never {
+    ) throws {
         let script = workDirectory.appendingPathComponent("install.sh")
         let backup = currentBundle.deletingLastPathComponent()
             .appendingPathComponent(".\(currentBundle.lastPathComponent).old")
 
+        // Paths arrive as arguments rather than interpolated into the body, so
+        // nothing in a path can be read as shell syntax.
         let source = """
         #!/bin/bash
         # Installs the downloaded update once the old app has quit.
         set -e
 
         pid="$1"
+        current="$2"
+        replacement="$3"
+        backup="$4"
+        workdir="$5"
+
         while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
 
-        rm -rf "\(backup.path)"
+        rm -rf "$backup"
         # Keep the old bundle until the new one is in place, so a failure here
         # leaves a working app behind rather than nothing at all.
-        if ! mv "\(currentBundle.path)" "\(backup.path)"; then exit 1; fi
+        if ! mv "$current" "$backup"; then exit 1; fi
 
-        if ! ditto "\(newBundle.path)" "\(currentBundle.path)"; then
-            mv "\(backup.path)" "\(currentBundle.path)"
+        if ! ditto "$replacement" "$current"; then
+            mv "$backup" "$current"
             exit 1
         fi
 
-        xattr -dr com.apple.quarantine "\(currentBundle.path)" 2>/dev/null || true
-        rm -rf "\(backup.path)"
-        open "\(currentBundle.path)"
-        rm -rf "\(workDirectory.path)"
+        xattr -dr com.apple.quarantine "$current" 2>/dev/null || true
+        rm -rf "$backup"
+        open "$current"
+        rm -rf "$workdir"
         """
 
         try source.write(to: script, atomically: true, encoding: .utf8)
@@ -280,14 +287,23 @@ public enum Updater {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [script.path, String(ProcessInfo.processInfo.processIdentifier)]
+        process.arguments = [
+            script.path,
+            String(ProcessInfo.processInfo.processIdentifier),
+            currentBundle.path,
+            newBundle.path,
+            backup.path,
+            workDirectory.path,
+        ]
         try process.run()
 
-        // Quit so the script can take over.
-        DispatchQueue.main.async { NSApplication.shared.terminate(nil) }
-        // Give the terminate a moment; the script is already waiting on this PID.
-        Thread.sleep(forTimeInterval: 10)
-        exit(0)
+        // Quit so the script, which is already waiting on this PID, can take
+        // over. exit() is the backstop if something refuses to terminate.
+        // Returning instead of parking a thread leaves nothing blocked.
+        DispatchQueue.main.async {
+            NSApplication.shared.terminate(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { exit(0) }
+        }
     }
 
     @discardableResult
