@@ -204,6 +204,8 @@ struct EncryptionSettings: View {
                                 .foregroundStyle(.secondary)
 
                             SecureField("Passphrase", text: $biometricPassphrase)
+                                .textFieldStyle(.roundedBorder)
+                                .labelsHidden()
                                 .onSubmit { enableBiometrics() }
 
                             HStack {
@@ -235,10 +237,12 @@ struct EncryptionSettings: View {
 
             Section(model.isEncrypted ? "Change passphrase" : "Set a passphrase") {
                 if model.isEncrypted {
-                    SecureField("Current passphrase", text: $currentPassphrase)
+                    passphraseField("Current passphrase", text: $currentPassphrase)
                 }
-                SecureField("New passphrase", text: $newPassphrase)
-                SecureField("Repeat new passphrase", text: $confirmPassphrase)
+                passphraseField("New passphrase", text: $newPassphrase)
+                passphraseField("Repeat new passphrase", text: $confirmPassphrase) {
+                    if canApply { apply() }
+                }
 
                 if !confirmPassphrase.isEmpty, newPassphrase != confirmPassphrase {
                     Text("Those do not match.")
@@ -288,6 +292,28 @@ struct EncryptionSettings: View {
         } message: {
             Text("Your account secrets will be stored as plain text in your home folder.")
         }
+    }
+
+    /// A labelled, bordered secure field.
+    ///
+    /// Written out rather than using a bare SecureField because a grouped Form
+    /// gives those no border, which leaves them invisible on a dark background.
+    @ViewBuilder
+    private func passphraseField(
+        _ label: String,
+        text: Binding<String>,
+        onSubmit: @escaping () -> Void = {}
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            SecureField(label, text: text)
+                .textFieldStyle(.roundedBorder)
+                .labelsHidden()
+                .onSubmit(onSubmit)
+        }
+        .padding(.vertical, 2)
     }
 
     private func apply() {
