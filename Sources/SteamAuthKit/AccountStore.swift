@@ -76,6 +76,7 @@ public enum StoreError: LocalizedError {
     case notEncryptedButPassphraseGiven
     case passphraseRequired
     case accountHasNoSteamID
+    case importFailed([(filename: String, reason: String)])
 
     public var errorDescription: String? {
         switch self {
@@ -89,6 +90,12 @@ public enum StoreError: LocalizedError {
             return "A passphrase is required to read these maFiles."
         case .accountHasNoSteamID:
             return "This account has no SteamID, so it cannot be saved."
+        case .importFailed(let failures):
+            let detail = failures
+                .prefix(3)
+                .map { "\($0.filename) (\($0.reason))" }
+                .joined(separator: ", ")
+            return "Nothing could be imported: \(detail)."
         }
     }
 }
@@ -352,33 +359,92 @@ public final class AccountStore {
         return account
     }
 
+    /// What a folder import managed to do.
+    ///
+    /// Partial success is reported rather than thrown: one unreadable file (an
+    /// iCloud placeholder that is not downloaded, say) should not cost the user
+    /// the other nine accounts in the folder.
+    public struct ImportSummary: Sendable {
+        public var imported: [SteamGuardAccount] = []
+        public var skipped: [(filename: String, reason: String)] = []
+
+        public var isEmpty: Bool { imported.isEmpty }
+    }
+
     /// Imports a whole `maFiles` folder: reads its manifest for the per-file
     /// salts and IVs, then re-saves each account into this store.
+    ///
+    /// Any `.maFile` on disk that the manifest does not list is picked up too,
+    /// since folders copied by hand often lose manifest entries.
+    @discardableResult
     public func importFolder(
         at url: URL,
         sourcePassphrase: String?,
         storePassphrase: String?
-    ) throws -> [SteamGuardAccount] {
+    ) throws -> ImportSummary {
         let sourceManifestURL = url.appendingPathComponent("manifest.json")
         guard let data = try? Data(contentsOf: sourceManifestURL),
               let sourceManifest = try? JSONDecoder().decode(Manifest.self, from: data)
         else { throw StoreError.manifestUnreadable }
 
-        var imported = [SteamGuardAccount]()
-        for entry in sourceManifest.entries {
-            let fileURL = url.appendingPathComponent(entry.filename)
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+        var summary = ImportSummary()
+        var seen = Set<String>()
 
-            let account = try importMaFile(
-                at: fileURL,
-                sourcePassphrase: entry.isEncrypted ? sourcePassphrase : nil,
-                sourceSalt: entry.salt,
-                sourceIV: entry.iv,
-                storePassphrase: storePassphrase
-            )
-            imported.append(account)
+        for entry in sourceManifest.entries {
+            seen.insert(entry.filename)
+            let fileURL = url.appendingPathComponent(entry.filename)
+
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                summary.skipped.append((entry.filename, "missing from the folder"))
+                continue
+            }
+
+            do {
+                let account = try importMaFile(
+                    at: fileURL,
+                    sourcePassphrase: entry.isEncrypted ? sourcePassphrase : nil,
+                    sourceSalt: entry.salt,
+                    sourceIV: entry.iv,
+                    storePassphrase: storePassphrase
+                )
+                summary.imported.append(account)
+            } catch {
+                summary.skipped.append((entry.filename, reason(for: error, url: fileURL)))
+            }
         }
-        return imported
+
+        // Unlisted .maFiles: only plain ones can be read, having no salt.
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+        for name in names where name.hasSuffix(".maFile") && !seen.contains(name) {
+            do {
+                let account = try importMaFile(
+                    at: url.appendingPathComponent(name),
+                    sourcePassphrase: nil,
+                    storePassphrase: storePassphrase
+                )
+                summary.imported.append(account)
+            } catch {
+                summary.skipped.append((name, "not listed in manifest.json and not readable"))
+            }
+        }
+
+        // Only a total failure is worth throwing over.
+        if summary.imported.isEmpty, !summary.skipped.isEmpty {
+            throw StoreError.importFailed(summary.skipped)
+        }
+        return summary
+    }
+
+    /// Turns a read failure into something worth showing the user.
+    private func reason(for error: Error, url: URL) -> String {
+        if error is CryptoError { return "wrong passphrase, or not a valid maFile" }
+
+        // An iCloud/Drive file that has not been downloaded reads as missing.
+        let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey])
+        if values?.isUbiquitousItem == true {
+            return "stored in iCloud and not downloaded to this Mac"
+        }
+        return error.localizedDescription
     }
 
     // MARK: - Disk

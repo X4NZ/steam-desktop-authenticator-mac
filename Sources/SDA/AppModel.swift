@@ -450,7 +450,7 @@ final class AppModel: ObservableObject {
 
     func importFolder(at url: URL, sourcePassphrase: String?) {
         do {
-            let imported = try store.importFolder(
+            let summary = try store.importFolder(
                 at: url,
                 sourcePassphrase: sourcePassphrase,
                 storePassphrase: passphrase
@@ -460,7 +460,19 @@ final class AppModel: ObservableObject {
             selectedAccountID = accounts.first?.id
             lockState = accounts.isEmpty ? .empty : .unlocked
             updateCode()
-            show(.success, "Imported \(imported.count) account\(imported.count == 1 ? "" : "s").")
+
+            let count = summary.imported.count
+            var message = "Imported \(count) account\(count == 1 ? "" : "s")."
+
+            if !summary.skipped.isEmpty {
+                // Name what was left behind, so a partial import is never silent.
+                let names = summary.skipped.prefix(3).map(\.filename).joined(separator: ", ")
+                let extra = summary.skipped.count > 3 ? " and \(summary.skipped.count - 3) more" : ""
+                message += " Skipped \(names)\(extra): \(summary.skipped[0].reason)."
+                show(.warning, message)
+            } else {
+                show(.success, message)
+            }
         } catch {
             show(.error, error.localizedDescription)
         }
