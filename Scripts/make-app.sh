@@ -10,8 +10,11 @@ cd "$(dirname "$0")/.."
 CONFIG="${CONFIG:-release}"
 APP_NAME="Steam Desktop Authenticator"
 BUNDLE_ID="com.sdamac.SDA"
-# The release workflow passes the tag in as VERSION; a local build is a dev build.
-VERSION="${VERSION:-1.0.0}"
+# The release workflow passes the tag in as VERSION. A local build takes the
+# latest tag instead of a hardcoded number, so a locally built app never claims
+# to be an older release than the code it actually contains.
+VERSION="${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}"
+VERSION="${VERSION:-0.0.0}"
 # Where "Check for Updates" looks. Must match the repo releases are published to.
 UPDATE_REPO="${UPDATE_REPO:-X4NZ/steam-desktop-authenticator-mac}"
 APP="build/${APP_NAME}.app"
