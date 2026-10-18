@@ -10,6 +10,10 @@ public actor SteamTime {
 
     private var offset: Int64 = 0
     private var isAligned = false
+    private var lastAligned: Date?
+
+    /// How long an alignment is trusted before it is measured again.
+    private static let refreshInterval: TimeInterval = 60 * 60
 
     /// Current Steam time in seconds since the epoch.
     public func currentTime() async -> Int64 {
@@ -21,6 +25,17 @@ public actor SteamTime {
     public func secondsRemaining() async -> Int {
         let time = await currentTime()
         return 30 - Int(time % 30)
+    }
+
+    /// Re-measures if the last alignment has gone stale. Cheap to call often.
+    public func alignIfStale() async {
+        guard let lastAligned else {
+            await align()
+            return
+        }
+        if Date().timeIntervalSince(lastAligned) > Self.refreshInterval {
+            await align()
+        }
     }
 
     public func align() async {
@@ -38,6 +53,7 @@ public actor SteamTime {
 
             offset = serverTime - localTime
             isAligned = true
+            lastAligned = Date()
         } catch {
             // Falling back to the local clock is better than refusing to show a
             // code; most machines are within a second of correct.

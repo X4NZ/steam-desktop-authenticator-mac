@@ -76,6 +76,7 @@ public enum StoreError: LocalizedError {
     case notEncryptedButPassphraseGiven
     case passphraseRequired
     case accountHasNoSteamID
+    case accountFileUnreadable(String)
     case importFailed([(filename: String, reason: String)])
 
     public var errorDescription: String? {
@@ -90,6 +91,8 @@ public enum StoreError: LocalizedError {
             return "A passphrase is required to read these maFiles."
         case .accountHasNoSteamID:
             return "This account has no SteamID, so it cannot be saved."
+        case .accountFileUnreadable(let name):
+            return "\(name) is not a readable maFile. It may be corrupt; restore it from a backup."
         case .importFailed(let failures):
             let detail = failures
                 .prefix(3)
@@ -226,7 +229,9 @@ public final class AccountStore {
             }
 
             guard var account = try? JSONDecoder().decode(SteamGuardAccount.self, from: json) else {
-                throw CryptoError.wrongPassword
+                // Only blame the passphrase when one was actually used.
+                if entry.isEncrypted { throw CryptoError.wrongPassword }
+                throw StoreError.accountFileUnreadable(entry.filename)
             }
             // Entries carry the SteamID even when the file predates sessions.
             if account.session == nil, entry.steamID != 0 {
@@ -237,8 +242,13 @@ public final class AccountStore {
         return accounts
     }
 
-    /// Writes one account, encrypting it when the store is encrypted.
-    public func save(_ account: SteamGuardAccount, passphrase: String?) throws {
+    /// Serialises an account, encrypting it when asked, and returns the bytes
+    /// together with the manifest entry describing them.
+    private func payload(
+        for account: SteamGuardAccount,
+        passphrase: String?,
+        encrypt: Bool
+    ) throws -> (entry: ManifestEntry, contents: Data) {
         guard let steamID = account.session?.steamID, steamID != 0 else {
             throw StoreError.accountHasNoSteamID
         }
@@ -246,34 +256,39 @@ public final class AccountStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = try encoder.encode(account)
-        let plaintext = String(decoding: json, as: UTF8.self)
 
         var entry = ManifestEntry(filename: "\(steamID).maFile", steamID: steamID)
-        let contents: Data
+        guard encrypt else { return (entry, json) }
 
-        if manifest.encrypted {
-            guard let passphrase, !passphrase.isEmpty else { throw StoreError.passphraseRequired }
-            // Fresh salt and IV on every write, so repeated saves never reuse a
-            // keystream position with the same key.
-            let salt = FileEncryptor.randomSalt()
-            let iv = FileEncryptor.randomIV()
-            let ciphertext = try FileEncryptor.encrypt(
-                plaintext: plaintext,
-                passphrase: passphrase,
-                salt: salt,
-                iv: iv
-            )
-            entry.salt = salt
-            entry.iv = iv
-            contents = Data(ciphertext.utf8)
-        } else {
-            contents = json
-        }
+        guard let passphrase, !passphrase.isEmpty else { throw StoreError.passphraseRequired }
+
+        // Fresh salt and IV on every write, so repeated saves never reuse a
+        // keystream position with the same key.
+        let salt = FileEncryptor.randomSalt()
+        let iv = FileEncryptor.randomIV()
+        let ciphertext = try FileEncryptor.encrypt(
+            plaintext: String(decoding: json, as: UTF8.self),
+            passphrase: passphrase,
+            salt: salt,
+            iv: iv
+        )
+        entry.salt = salt
+        entry.iv = iv
+        return (entry, Data(ciphertext.utf8))
+    }
+
+    /// Writes one account, encrypting it when the store is encrypted.
+    public func save(_ account: SteamGuardAccount, passphrase: String?) throws {
+        let (entry, contents) = try payload(
+            for: account,
+            passphrase: passphrase,
+            encrypt: manifest.encrypted
+        )
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try write(contents, to: directory.appendingPathComponent(entry.filename))
 
-        if let index = manifest.entries.firstIndex(where: { $0.steamID == steamID }) {
+        if let index = manifest.entries.firstIndex(where: { $0.steamID == entry.steamID }) {
             manifest.entries[index] = entry
         } else {
             manifest.entries.append(entry)
@@ -300,22 +315,51 @@ public final class AccountStore {
     /// Re-encrypts every account under a new passphrase (or removes encryption
     /// when `newPassphrase` is nil).
     ///
-    /// Accounts are decrypted into memory first so a failure part-way through
-    /// cannot leave half the folder under one key and half under another.
+    /// Every file is encrypted in memory and staged beside its target before any
+    /// of them is replaced, so a failure half way through cannot leave the folder
+    /// with some files under the old key and some under the new one — which no
+    /// single passphrase could then open.
     public func changeEncryption(currentPassphrase: String?, newPassphrase: String?) throws {
         let accounts = try loadAccounts(passphrase: currentPassphrase)
+        let encrypt = (newPassphrase?.isEmpty == false)
 
-        let previousEncrypted = manifest.encrypted
-        manifest.encrypted = (newPassphrase?.isEmpty == false)
+        var staged: [(entry: ManifestEntry, temporary: URL, final: URL)] = []
+
+        func discardStaged() {
+            for item in staged { try? FileManager.default.removeItem(at: item.temporary) }
+        }
 
         do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
             for account in accounts {
-                try save(account, passphrase: newPassphrase)
+                let (entry, contents) = try payload(
+                    for: account,
+                    passphrase: newPassphrase,
+                    encrypt: encrypt
+                )
+                let temporary = directory.appendingPathComponent(entry.filename + ".new")
+                try write(contents, to: temporary)
+                staged.append((entry, temporary, directory.appendingPathComponent(entry.filename)))
             }
         } catch {
-            manifest.encrypted = previousEncrypted
-            try? saveManifest()
+            // Nothing has been replaced yet, so the folder is untouched.
+            discardStaged()
             throw error
+        }
+
+        // Past this point the writes are renames, which are atomic per file.
+        for item in staged {
+            _ = try? FileManager.default.replaceItemAt(item.final, withItemAt: item.temporary)
+        }
+
+        manifest.encrypted = encrypt
+        for item in staged {
+            if let index = manifest.entries.firstIndex(where: { $0.steamID == item.entry.steamID }) {
+                manifest.entries[index] = item.entry
+            } else {
+                manifest.entries.append(item.entry)
+            }
         }
         try saveManifest()
     }

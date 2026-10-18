@@ -174,7 +174,11 @@ public enum SteamLogin {
     // MARK: - Step 4: poll for tokens
 
     /// One poll. Returns nil while Steam is still waiting for confirmation.
-    public static func poll(challenge: Challenge) async throws -> Credentials? {
+    ///
+    /// `challenge` is inout because Steam may rotate the client id mid-wait; the
+    /// next poll has to use the new one or it will never complete.
+    @discardableResult
+    public static func poll(challenge: inout Challenge) async throws -> Credentials? {
         var request = ProtoWriter()
         request.varint(1, challenge.clientID)
         request.bytes(2, challenge.requestID)
@@ -184,6 +188,10 @@ public enum SteamLogin {
             method: "PollAuthSessionStatus",
             request: request
         )
+
+        if let rotated = response.varint(1), rotated != 0, rotated != challenge.clientID {
+            challenge.clientID = rotated
+        }
 
         guard let refreshToken = response.string(3), !refreshToken.isEmpty else { return nil }
 
@@ -203,11 +211,12 @@ public enum SteamLogin {
         challenge: Challenge,
         timeout: TimeInterval = 180
     ) async throws -> Credentials {
+        var challenge = challenge
         let deadline = Date().addingTimeInterval(timeout)
         let interval = max(challenge.interval, 2)
 
         while Date() < deadline {
-            if let credentials = try await poll(challenge: challenge) {
+            if let credentials = try await poll(challenge: &challenge) {
                 return credentials
             }
             try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))

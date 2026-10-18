@@ -32,18 +32,23 @@ public enum Crypto {
         let passwordBytes = Array(password.utf8)
         var derived = [UInt8](repeating: 0, count: keyLength)
 
-        let status = salt.withUnsafeBytes { saltBuffer -> Int32 in
-            CCKeyDerivationPBKDF(
-                CCPBKDFAlgorithm(kCCPBKDF2),
-                passwordBytes.withUnsafeBufferPointer { $0.baseAddress },
-                passwordBytes.count,
-                saltBuffer.bindMemory(to: UInt8.self).baseAddress,
-                salt.count,
-                CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1),
-                UInt32(rounds),
-                &derived,
-                keyLength
-            )
+        // Both pointers are used strictly inside the closures that own them:
+        // returning baseAddress out of withUnsafeBufferPointer would leave the
+        // pointer's lifetime undefined.
+        let status = passwordBytes.withUnsafeBufferPointer { passwordBuffer -> Int32 in
+            salt.withUnsafeBytes { saltBuffer -> Int32 in
+                CCKeyDerivationPBKDF(
+                    CCPBKDFAlgorithm(kCCPBKDF2),
+                    passwordBuffer.baseAddress,
+                    passwordBuffer.count,
+                    saltBuffer.bindMemory(to: UInt8.self).baseAddress,
+                    salt.count,
+                    CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1),
+                    UInt32(rounds),
+                    &derived,
+                    keyLength
+                )
+            }
         }
 
         guard status == kCCSuccess else { throw CryptoError.keyDerivationFailed }

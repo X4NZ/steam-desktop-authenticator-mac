@@ -23,7 +23,14 @@ public struct SteamGuardAccount: Codable, Identifiable, Hashable, Sendable {
     public var fullyEnrolled: Bool?
     public var session: SessionData?
 
-    public var id: String { accountName ?? tokenGID ?? UUID().uuidString }
+    /// Stable across reads: a computed UUID fallback would hand out a different
+    /// identity every time, breaking list selection and id-keyed lookups.
+    public var id: String {
+        if let accountName, !accountName.isEmpty { return accountName }
+        if let tokenGID, !tokenGID.isEmpty { return tokenGID }
+        if let steamID = session?.steamID, steamID != 0 { return String(steamID) }
+        return "unknown-account"
+    }
 
     public init() {}
 
@@ -169,7 +176,9 @@ public struct SessionData: Codable, Hashable, Sendable {
         self.steamID = steamID
         self.accessToken = accessToken
         self.refreshToken = refreshToken
-        self.sessionID = sessionID
+        // Settled once, here, so it is stable across requests and gets persisted
+        // with the account rather than regenerated on every call.
+        self.sessionID = sessionID ?? Self.generateSessionID()
     }
 
     enum CodingKeys: String, CodingKey {
@@ -189,7 +198,8 @@ public struct SessionData: Codable, Hashable, Sendable {
         }
         accessToken = try? container.decodeIfPresent(String.self, forKey: .accessToken)
         refreshToken = try? container.decodeIfPresent(String.self, forKey: .refreshToken)
-        sessionID = try? container.decodeIfPresent(String.self, forKey: .sessionID)
+        sessionID = (try? container.decodeIfPresent(String.self, forKey: .sessionID))
+            ?? Self.generateSessionID()
     }
 
     // MARK: Token expiry
@@ -236,12 +246,11 @@ public struct SessionData: Codable, Hashable, Sendable {
 
     /// Cookies the `/mobileconf/` pages expect. `steamLoginSecure` carries the
     /// access token; the `mobileClient` pair makes Steam serve the mobile flow.
-    public mutating func cookieHeader() -> String {
-        if sessionID == nil { sessionID = Self.generateSessionID() }
+    public func cookieHeader() -> String {
         let loginSecure = "\(steamID)%7C%7C\(accessToken ?? "")"
         return [
             "steamLoginSecure=\(loginSecure)",
-            "sessionid=\(sessionID ?? "")",
+            "sessionid=\(sessionID ?? Self.generateSessionID())",
             "mobileClient=android",
             "mobileClientVersion=777777 3.6.4",
         ].joined(separator: "; ")
