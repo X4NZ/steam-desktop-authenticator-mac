@@ -86,8 +86,12 @@ final class AppModel: ObservableObject {
         if store.manifest.entries.isEmpty {
             lockState = .empty
         } else if store.isEncrypted {
-            // Try the keychain first so an encrypted store can open unattended.
-            if let saved = Keychain.load(), unlock(passphrase: saved, remember: false) {
+            // A plain keychain entry can open the store unattended. A Touch ID
+            // protected one must not prompt behind the user's back, so that goes
+            // through the unlock screen instead.
+            if Keychain.storedProtection == .plain,
+               let saved = Keychain.loadUnprotected(),
+               unlock(passphrase: saved, remember: false) {
                 lockState = .unlocked
             } else {
                 lockState = .locked
@@ -146,14 +150,20 @@ final class AppModel: ObservableObject {
 
     /// Loads and decrypts the accounts. Returns false on a wrong passphrase.
     @discardableResult
-    func unlock(passphrase candidate: String?, remember: Bool) -> Bool {
+    func unlock(
+        passphrase candidate: String?,
+        remember: Bool,
+        protection: Keychain.Protection = .plain
+    ) -> Bool {
         do {
             accounts = try store.loadAccounts(passphrase: candidate)
             passphrase = candidate
             settings = store.manifest
 
             if selectedAccountID == nil { selectedAccountID = accounts.first?.id }
-            if remember, let candidate { _ = Keychain.save(passphrase: candidate) }
+            if remember, let candidate {
+                Keychain.save(passphrase: candidate, protection: protection)
+            }
 
             lockState = accounts.isEmpty ? .empty : .unlocked
             updateCode()
@@ -164,6 +174,36 @@ final class AppModel: ObservableObject {
             }
             return false
         }
+    }
+
+    /// Asks for Touch ID, then unlocks with the stored passphrase.
+    ///
+    /// Returns false when there is nothing stored or the user backed out, so the
+    /// unlock screen can fall back to asking for the passphrase.
+    func unlockWithBiometrics() async -> Bool {
+        let result = await Keychain.load(
+            reason: "unlock your Steam authenticator accounts"
+        )
+
+        switch result {
+        case .success(let passphrase):
+            if unlock(passphrase: passphrase, remember: false) {
+                lockState = .unlocked
+                return true
+            }
+            // The stored passphrase no longer matches the files.
+            show(.error, "The saved passphrase did not unlock your maFiles.")
+            return false
+
+        case .failure(let error):
+            if let message = error.errorDescription { show(.error, message) }
+            return false
+        }
+    }
+
+    /// Checks a passphrase against the stored files without changing anything.
+    func verifyPassphrase(_ candidate: String) -> Bool {
+        store.verify(passphrase: candidate)
     }
 
     func lock() {
@@ -449,14 +489,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func changeEncryption(current: String?, new: String?, remember: Bool) -> Bool {
+    func changeEncryption(
+        current: String?,
+        new: String?,
+        remember: Bool,
+        protection: Keychain.Protection = .plain
+    ) -> Bool {
         do {
             try store.changeEncryption(currentPassphrase: current, newPassphrase: new)
             passphrase = new
             settings = store.manifest
 
             if let new, remember {
-                _ = Keychain.save(passphrase: new)
+                Keychain.save(passphrase: new, protection: protection)
             } else {
                 Keychain.delete()
             }

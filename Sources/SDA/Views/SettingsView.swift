@@ -141,7 +141,10 @@ struct EncryptionSettings: View {
     @State private var newPassphrase = ""
     @State private var confirmPassphrase = ""
     @State private var remember = Keychain.hasStoredPassphrase
+    @State private var useBiometrics = Keychain.storedProtection == .biometric
     @State private var showRemoveConfirmation = false
+    @State private var biometricPassphrase = ""
+    @State private var showBiometricPrompt = false
 
     private var canApply: Bool {
         guard !newPassphrase.isEmpty else { return false }
@@ -173,6 +176,63 @@ struct EncryptionSettings: View {
                 }
             }
 
+            if model.isEncrypted, Keychain.biometryAvailable {
+                Section {
+                    Toggle(
+                        "Unlock with \(Keychain.biometryLabel)",
+                        isOn: Binding(
+                            get: { Keychain.storedProtection == .biometric },
+                            set: { wanted in
+                                if wanted {
+                                    // The passphrase has to be re-entered once to
+                                    // store it under the new protection.
+                                    showBiometricPrompt = true
+                                } else {
+                                    Keychain.delete()
+                                    useBiometrics = false
+                                    remember = false
+                                    model.show(.info, "\(Keychain.biometryLabel) unlock turned off.")
+                                }
+                            }
+                        )
+                    )
+
+                    if showBiometricPrompt {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Enter your passphrase once to store it behind \(Keychain.biometryLabel).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            SecureField("Passphrase", text: $biometricPassphrase)
+                                .onSubmit { enableBiometrics() }
+
+                            HStack {
+                                Spacer()
+                                Button("Cancel") {
+                                    showBiometricPrompt = false
+                                    biometricPassphrase = ""
+                                }
+                                Button("Enable") { enableBiometrics() }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(biometricPassphrase.isEmpty)
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                } header: {
+                    Text(Keychain.biometryLabel)
+                } footer: {
+                    Text(
+                        "Your passphrase is kept in your login keychain, and the app asks for "
+                        + "\(Keychain.biometryLabel) before using it. Your Mac's login password "
+                        + "works as a fallback, and other apps cannot read the item without macOS "
+                        + "asking you first."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
             Section(model.isEncrypted ? "Change passphrase" : "Set a passphrase") {
                 if model.isEncrypted {
                     SecureField("Current passphrase", text: $currentPassphrase)
@@ -187,6 +247,10 @@ struct EncryptionSettings: View {
                 }
 
                 Toggle("Remember in my keychain", isOn: $remember)
+
+                if remember, Keychain.biometryAvailable {
+                    Toggle("Require \(Keychain.biometryLabel) to unlock", isOn: $useBiometrics)
+                }
 
                 HStack {
                     Spacer()
@@ -228,9 +292,36 @@ struct EncryptionSettings: View {
 
     private func apply() {
         let current = model.isEncrypted ? currentPassphrase : model.currentPassphrase
-        if model.changeEncryption(current: current, new: newPassphrase, remember: remember) {
+        if model.changeEncryption(
+            current: current,
+            new: newPassphrase,
+            remember: remember,
+            protection: (remember && useBiometrics) ? .biometric : .plain
+        ) {
             reset()
         }
+    }
+
+    /// Verifies the passphrase actually opens the store before storing it, so a
+    /// typo cannot leave Touch ID handing back something that does not work.
+    private func enableBiometrics() {
+        guard !biometricPassphrase.isEmpty else { return }
+
+        guard model.verifyPassphrase(biometricPassphrase) else {
+            model.show(.error, "That passphrase does not match your maFiles.")
+            return
+        }
+
+        if Keychain.save(passphrase: biometricPassphrase, protection: .biometric) {
+            useBiometrics = true
+            remember = true
+            model.show(.success, "\(Keychain.biometryLabel) unlock is on.")
+        } else {
+            model.show(.error, "Could not save the passphrase to your keychain.")
+        }
+
+        biometricPassphrase = ""
+        showBiometricPrompt = false
     }
 
     private func reset() {

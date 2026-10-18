@@ -69,7 +69,19 @@ git tag v1.1.0 && git push origin v1.1.0
 - **Background checking** — poll for confirmations on a timer, with optional
   auto-confirm for trades and market listings, and macOS notifications.
 - **Encryption** — same scheme as SDA, with the passphrase optionally stored in
-  your login keychain instead of passed on the command line.
+  your login keychain instead of passed on the command line, and optionally
+  behind Touch ID.
+
+### A note on Touch ID
+
+Turning on **Unlock with Touch ID** keeps the passphrase in your login keychain
+and makes the app require Touch ID (or your Mac's login password) before reading
+it. macOS also stops other apps reading that keychain item without asking you.
+
+It is a lock on the app, not a second layer of encryption: the maFiles are still
+encrypted with your passphrase, and anyone who knows that passphrase can open
+them without Touch ID. Binding the item to the Secure Enclave outright needs a
+Developer ID provisioning profile, which an ad-hoc signed build cannot have.
 
 ## Where your files live
 
