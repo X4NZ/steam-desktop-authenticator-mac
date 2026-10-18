@@ -1,3 +1,4 @@
+import AppUpdater
 import AppKit
 import SteamAuthKit
 import SwiftUI
@@ -11,6 +12,10 @@ struct SDAApp: App {
         Window("Steam Desktop Authenticator", id: "main") {
             RootView()
                 .environmentObject(model)
+                .sheet(item: $model.availableUpdate) { release in
+                    UpdateSheet(release: release)
+                        .environmentObject(model)
+                }
                 .frame(minWidth: 820, minHeight: 540)
                 .task { await model.start() }
         }
@@ -47,6 +52,13 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                Task { await model.checkForUpdate(silently: false) }
+            }
+            .disabled(model.isCheckingForUpdate)
+        }
+
         CommandGroup(after: .newItem) {
             Button("Copy Steam Guard Code") { model.copyCurrentCode() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])

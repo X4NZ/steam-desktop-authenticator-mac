@@ -13,14 +13,23 @@ let package = Package(
             name: "SteamAuthKit",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .target(
+            name: "AppUpdater",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .executableTarget(
             name: "SDA",
-            dependencies: ["SteamAuthKit"],
+            dependencies: ["SteamAuthKit", "AppUpdater"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .testTarget(
+            name: "AppUpdaterTests",
+            dependencies: ["AppUpdater"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(
             name: "SteamAuthKitTests",
-            dependencies: ["SteamAuthKit"],
+            dependencies: ["SteamAuthKit", "AppUpdater"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

@@ -13,7 +13,22 @@ a folder between this app and SDA on Windows in either direction.
 
 ---
 
-## Build
+## Install
+
+Grab the latest `.zip` from [Releases](https://github.com/X4NZ/steam-desktop-authenticator-mac/releases/latest),
+unzip it, and drag the app into `/Applications`.
+
+The app is ad-hoc signed, not notarized, so the first launch needs
+**right-click ▸ Open** (or **System Settings ▸ Privacy & Security ▸ Open Anyway**).
+After that it opens normally.
+
+### Updating
+
+**Check for Updates…** in the app menu compares against the latest GitHub
+release and can download and install it in place, restarting the app when it is
+done. It also checks quietly once a day on launch.
+
+### Building it yourself
 
 Needs Xcode 14+ (tested on Xcode 27.1 / Swift 6.4) and macOS 14 or later.
 
@@ -22,13 +37,18 @@ Needs Xcode 14+ (tested on Xcode 27.1 / Swift 6.4) and macOS 14 or later.
 open "build/Steam Desktop Authenticator.app"
 ```
 
-That produces a signed-ad-hoc `.app` bundle with its icon. Drag it to
-`/Applications` if you want to keep it.
-
 To run the tests:
 
 ```bash
 swift test
+```
+
+### Cutting a release
+
+Tag it and the workflow builds, tests, zips and publishes:
+
+```bash
+git tag v1.1.0 && git push origin v1.1.0
 ```
 
 ---

@@ -1,3 +1,4 @@
+import AppUpdater
 import AppKit
 import Foundation
 import SteamAuthKit
@@ -32,6 +33,9 @@ final class AppModel: ObservableObject {
     @Published var steamTimeOffset: Int64 = 0
     /// Per-account pending confirmation counts, for the sidebar badges.
     @Published var pendingCounts: [String: Int] = [:]
+    /// Set when a newer release is found, which presents the update sheet.
+    @Published var availableUpdate: Updater.Release?
+    @Published var isCheckingForUpdate = false
 
     struct Banner: Identifiable, Equatable {
         enum Kind { case info, success, warning, error }
@@ -101,6 +105,43 @@ final class AppModel: ObservableObject {
         if lockState == .unlocked {
             await refreshSessionsIfNeeded()
         }
+
+        await checkForUpdate(silently: true)
+    }
+
+    // MARK: - Updates
+
+    /// A silent check runs at launch and says nothing unless there is an
+    /// update; an explicit one reports "you are up to date" too.
+    func checkForUpdate(silently: Bool) async {
+        guard !isCheckingForUpdate else { return }
+        if silently, !shouldAutoCheck() { return }
+
+        isCheckingForUpdate = true
+        defer { isCheckingForUpdate = false }
+
+        do {
+            let release = try await Updater.checkForUpdate()
+            UserDefaults.standard.set(Date(), forKey: Self.lastUpdateCheckKey)
+
+            if let release {
+                availableUpdate = release
+            } else if !silently {
+                show(.success, "You are on the latest version (\(Updater.currentVersion)).")
+            }
+        } catch {
+            if !silently { show(.error, error.localizedDescription) }
+        }
+    }
+
+    private static let lastUpdateCheckKey = "lastUpdateCheck"
+
+    /// At most one automatic check a day, so launching repeatedly does not
+    /// hammer the API and burn the unauthenticated rate limit.
+    private func shouldAutoCheck() -> Bool {
+        guard let last = UserDefaults.standard.object(forKey: Self.lastUpdateCheckKey) as? Date
+        else { return true }
+        return Date().timeIntervalSince(last) > 24 * 60 * 60
     }
 
     /// Loads and decrypts the accounts. Returns false on a wrong passphrase.

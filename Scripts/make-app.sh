@@ -10,7 +10,10 @@ cd "$(dirname "$0")/.."
 CONFIG="${CONFIG:-release}"
 APP_NAME="Steam Desktop Authenticator"
 BUNDLE_ID="com.sdamac.SDA"
-VERSION="1.0.0"
+# The release workflow passes the tag in as VERSION; a local build is a dev build.
+VERSION="${VERSION:-1.0.0}"
+# Where "Check for Updates" looks. Must match the repo releases are published to.
+UPDATE_REPO="${UPDATE_REPO:-X4NZ/steam-desktop-authenticator-mac}"
 APP="build/${APP_NAME}.app"
 
 echo "==> Building ($CONFIG)"
@@ -42,6 +45,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSSupportsAutomaticTermination</key><false/>
     <key>NSSupportsSuddenTermination</key><false/>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+    <key>SDAUpdateRepository</key><string>${UPDATE_REPO}</string>
 </dict>
 </plist>
 PLIST
@@ -68,5 +72,5 @@ codesign --force --sign - --timestamp=none "$APP" >/dev/null 2>&1 \
     || echo "    (signing failed; the app still runs)"
 
 echo
-echo "Built $APP"
+echo "Built $APP  (version ${VERSION}, updates from ${UPDATE_REPO})"
 echo "Run it with:  open \"$APP\""

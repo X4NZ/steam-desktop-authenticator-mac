@@ -1,0 +1,63 @@
+name: Release
+
+# Tagging v1.2.3 builds the app and attaches it to a GitHub release, which is
+# what the in-app updater polls.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without the leading v)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building $version"
+
+      - name: Test
+        run: swift test
+
+      - name: Build app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          UPDATE_REPO: ${{ github.repository }}
+        run: ./Scripts/make-app.sh
+
+      - name: Zip app
+        run: |
+          # ditto, not zip: it preserves the bundle's symlinks and metadata,
+          # and it is what the updater expects on the way back out.
+          cd build
+          ditto -c -k --sequesterRsrc --keepParent \
+            "Steam Desktop Authenticator.app" \
+            "Steam-Desktop-Authenticator-${{ steps.version.outputs.version }}.zip"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            --verify-tag \
+            "build/Steam-Desktop-Authenticator-${{ steps.version.outputs.version }}.zip" \
+          || gh release upload "$tag" \
+            "build/Steam-Desktop-Authenticator-${{ steps.version.outputs.version }}.zip" --clobber
