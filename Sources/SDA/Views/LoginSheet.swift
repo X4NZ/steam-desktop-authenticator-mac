@@ -59,7 +59,6 @@ struct LoginSheet: View {
     @State private var errorMessage: String?
 
     @State private var linker: AuthenticatorLinker?
-    @State private var session: SessionData?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -393,11 +392,11 @@ struct LoginSheet: View {
                 step = .guardCode(challenge, .emailCode)
 
             case .deviceConfirmation, .emailConfirmation:
+                // No nested run{}: the outer one already owns busy and the error
+                // message for the whole attempt.
                 step = .awaitingApproval(challenge)
-                await run {
-                    let credentials = try await SteamLogin.pollUntilConfirmed(challenge: challenge)
-                    try await proceed(with: credentials)
-                }
+                let credentials = try await SteamLogin.pollUntilConfirmed(challenge: challenge)
+                try await proceed(with: credentials)
 
             case .none, .unknown, .machineToken, .legacyMachineAuth:
                 try await completeLogin(challenge: challenge)
@@ -429,7 +428,6 @@ struct LoginSheet: View {
         if newSession.accessToken?.isEmpty != false {
             newSession = try await SteamLogin.refreshAccessToken(session: newSession)
         }
-        session = newSession
 
         if var account = reason.existingAccount {
             account.session = newSession

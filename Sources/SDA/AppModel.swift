@@ -22,7 +22,16 @@ final class AppModel: ObservableObject {
 
     @Published var lockState: LockState = .loading
     @Published var accounts: [SteamGuardAccount] = []
-    @Published var selectedAccountID: String?
+    @Published var selectedAccountID: String? {
+        didSet {
+            guard oldValue != selectedAccountID else { return }
+            // Both of these belong to the account being left behind. Acting on a
+            // stale confirmation would send it under the newly selected account.
+            confirmations = []
+            isLoadingConfirmations = false
+            updateCode()
+        }
+    }
     @Published var currentCode: String = "—"
     @Published var secondsRemaining: Int = 30
     @Published var confirmations: [Confirmation] = []
@@ -52,6 +61,13 @@ final class AppModel: ObservableObject {
     private var checkTimer: Timer?
     /// Confirmation ids already surfaced, so a notification fires only once.
     private var notifiedConfirmationIDs = Set<UInt64>()
+    /// When the Steam clock offset was last re-checked from the timer.
+    private var lastAlignCheck = Date()
+    /// Guards against a slow check still running when the timer fires again.
+    private var isRunningPeriodicCheck = false
+    /// Replaces the previous banner's dismissal task rather than stacking one
+    /// sleeping task per banner.
+    private var bannerDismissTask: Task<Void, Never>?
 
     var storeDirectory: URL { store.directory }
     var isEncrypted: Bool { store.isEncrypted }
@@ -59,6 +75,12 @@ final class AppModel: ObservableObject {
 
     init(store: AccountStore = AccountStore()) {
         self.store = store
+    }
+
+    deinit {
+        codeTimer?.invalidate()
+        checkTimer?.invalidate()
+        bannerDismissTask?.cancel()
     }
 
     var selectedAccount: SteamGuardAccount? {
@@ -220,7 +242,19 @@ final class AppModel: ObservableObject {
         codeTimer?.invalidate()
         // A one-second tick is enough: codes change on 30-second boundaries.
         codeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updateCode() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.updateCode()
+
+                // The offset is measured at launch; re-check occasionally so a
+                // long session or a sleep/wake cycle cannot drift out of the
+                // 30-second window.
+                if Date().timeIntervalSince(self.lastAlignCheck) > 300 {
+                    self.lastAlignCheck = Date()
+                    await SteamTime.shared.alignIfStale()
+                    self.steamTimeOffset = await SteamTime.shared.currentOffset
+                }
+            }
         }
         updateCode()
     }
@@ -366,6 +400,9 @@ final class AppModel: ObservableObject {
     /// the user opted into and notifying about the rest.
     private func runPeriodicCheck() async {
         guard lockState == .unlocked else { return }
+        guard !isRunningPeriodicCheck else { return }
+        isRunningPeriodicCheck = true
+        defer { isRunningPeriodicCheck = false }
 
         let targets = settings.checkAllAccounts
             ? accounts
@@ -416,6 +453,12 @@ final class AppModel: ObservableObject {
                         !autoAccept.contains { $0.id == pendingItem.id }
                     }
                 }
+                // Forget ids that are no longer pending, so this set tracks
+                // what is outstanding rather than growing without limit.
+                let stillPending = Set(pending.map(\.id))
+                notifiedConfirmationIDs.formIntersection(
+                    stillPending.union(autoAccept.map(\.id))
+                )
             } catch {
                 // Background polling stays quiet: a transient failure here should
                 // not interrupt whatever the user is doing.
@@ -595,12 +638,12 @@ final class AppModel: ObservableObject {
         banner = Banner(kind: kind, message: message)
         let shown = banner?.id
 
-        Task { [weak self] in
+        bannerDismissTask?.cancel()
+        bannerDismissTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 6_000_000_000)
-            await MainActor.run {
-                // Only clear it if nothing newer replaced it.
-                if self?.banner?.id == shown { self?.banner = nil }
-            }
+            guard !Task.isCancelled else { return }
+            // Only clear it if nothing newer replaced it.
+            if self?.banner?.id == shown { self?.banner = nil }
         }
     }
 }
