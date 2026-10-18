@@ -220,6 +220,8 @@ enum EResult {
     static func describe(_ value: Int) -> String {
         switch value {
         case 5: return "invalid password"
+        case 8: return "a required field was missing or malformed"
+        case 10: return "Steam is busy; try again"
         case 15: return "access denied"
         case 16: return "timed out"
         case 20: return "Steam service unavailable"

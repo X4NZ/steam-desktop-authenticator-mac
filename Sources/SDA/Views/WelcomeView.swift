@@ -2,8 +2,7 @@ import SwiftUI
 
 struct WelcomeView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var showLogin = false
-    @State private var showImport = false
+    @State private var sheet: MainSheet?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,7 +22,7 @@ struct WelcomeView: View {
 
                 HStack(spacing: 12) {
                     Button {
-                        showImport = true
+                        sheet = .importFiles
                     } label: {
                         Label("Import maFiles", systemImage: "square.and.arrow.down")
                             .frame(width: 150)
@@ -31,7 +30,7 @@ struct WelcomeView: View {
                     .controlSize(.large)
 
                     Button {
-                        showLogin = true
+                        sheet = .login(.setup)
                     } label: {
                         Label("Set Up New Account", systemImage: "plus")
                             .frame(width: 170)
@@ -47,8 +46,12 @@ struct WelcomeView: View {
             Spacer()
         }
         .padding(40)
-        .sheet(isPresented: $showLogin) { LoginSheet(reason: .setup) }
-        .sheet(isPresented: $showImport) { ImportSheet() }
+        .sheet(item: $sheet) { which in
+            switch which {
+            case .login(let reason): LoginSheet(reason: reason)
+            case .importFiles: ImportSheet()
+            }
+        }
     }
 }
 

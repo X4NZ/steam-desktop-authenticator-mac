@@ -1,27 +1,37 @@
 import SteamAuthKit
 import SwiftUI
 
+/// Which sheet the main window is showing.
+///
+/// Carrying the reason in the value, rather than in a second piece of state read
+/// when the sheet is built, means the sheet cannot be presented with a stale one.
+enum MainSheet: Identifiable {
+    case login(LoginSheet.Reason)
+    case importFiles
+
+    var id: String {
+        switch self {
+        case .login(let reason): return "login-\(reason.existingAccount?.id ?? "new")"
+        case .importFiles: return "import"
+        }
+    }
+}
+
 struct MainView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var showLogin = false
-    @State private var showImport = false
-    @State private var loginReason: LoginSheet.Reason = .setup
+    @State private var sheet: MainSheet?
 
     var body: some View {
         NavigationSplitView {
             AccountSidebar(
-                onAddAccount: {
-                    loginReason = .setup
-                    showLogin = true
-                },
-                onImport: { showImport = true }
+                onAddAccount: { sheet = .login(.setup) },
+                onImport: { sheet = .importFiles }
             )
             .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 340)
         } detail: {
             if let account = model.selectedAccount {
                 AccountDetailView(account: account, onReauthenticate: { reason in
-                    loginReason = reason
-                    showLogin = true
+                    sheet = .login(reason)
                 })
             } else {
                 ContentUnavailableView(
@@ -31,8 +41,12 @@ struct MainView: View {
                 )
             }
         }
-        .sheet(isPresented: $showLogin) { LoginSheet(reason: loginReason) }
-        .sheet(isPresented: $showImport) { ImportSheet() }
+        .sheet(item: $sheet) { which in
+            switch which {
+            case .login(let reason): LoginSheet(reason: reason)
+            case .importFiles: ImportSheet()
+            }
+        }
     }
 }
 

@@ -38,11 +38,18 @@ struct LoginSheet: View {
 
     let reason: Reason
 
+    init(reason: Reason) {
+        self.reason = reason
+        // Seeded here rather than in onAppear: relying on that fired after the
+        // field had already been rendered, and could leave it empty.
+        _username = State(initialValue: reason.existingAccount?.accountName ?? "")
+    }
+
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
     @State private var step: Step = .credentials
-    @State private var username = ""
+    @State private var username: String
     @State private var password = ""
     @State private var code = ""
     @State private var phoneNumber = ""
@@ -80,11 +87,6 @@ struct LoginSheet: View {
         }
         .frame(width: 460)
         .frame(minHeight: 300)
-        .onAppear {
-            if let account = reason.existingAccount {
-                username = account.accountName ?? ""
-            }
-        }
     }
 
     // MARK: - Chrome
@@ -206,7 +208,7 @@ struct LoginSheet: View {
                 LabeledContent("Account name") {
                     TextField("", text: $username)
                         .textFieldStyle(.roundedBorder)
-                        .disabled(reason.existingAccount != nil)
+                        .disabled(lockedToStoredAccount)
                 }
                 LabeledContent("Password") {
                     SecureField("", text: $password)
@@ -349,9 +351,24 @@ struct LoginSheet: View {
         busy = false
     }
 
+    /// True only when the account name is known, and therefore not editable.
+    private var lockedToStoredAccount: Bool {
+        reason.existingAccount?.accountName?.isEmpty == false
+    }
+
     private func beginLogin() async {
+        let name = username.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else {
+            errorMessage = "Enter your Steam account name."
+            return
+        }
+        guard !password.isEmpty else {
+            errorMessage = "Enter your Steam password."
+            return
+        }
+
         await run {
-            let challenge = try await SteamLogin.begin(accountName: username, password: password)
+            let challenge = try await SteamLogin.begin(accountName: name, password: password)
             // The password is no longer needed; drop it from memory.
             password = ""
 
