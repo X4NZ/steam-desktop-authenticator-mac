@@ -84,6 +84,22 @@ enum Keychain {
 
     @discardableResult
     static func save(passphrase: String, protection: Protection) -> Bool {
+        // Updating in place keeps the existing item if the write fails, rather
+        // than deleting it first and leaving nothing behind.
+        if storedProtection == protection, hasStoredPassphrase {
+            let query: [CFString: Any] = [
+                kSecClass: kSecClassGenericPassword,
+                kSecAttrService: service,
+                kSecAttrAccount: account,
+            ]
+            let changes: [CFString: Any] = [kSecValueData: Data(passphrase.utf8)]
+
+            if SecItemUpdate(query as CFDictionary, changes as CFDictionary) == errSecSuccess {
+                UserDefaults.standard.set(protection.rawValue, forKey: protectionKey)
+                return true
+            }
+        }
+
         delete()
 
         var attributes: [CFString: Any] = [
