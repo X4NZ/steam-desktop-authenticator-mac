@@ -535,6 +535,13 @@ struct LoginSheet: View {
                 errorMessage =
                     "Steam rejected the generated codes. Your Mac's clock is probably off — turn on "
                     + "automatic time in System Settings, then try again."
+
+            case .steamKeptAskingForCodes:
+                // Nothing was rejected here, so pointing at the clock would
+                // send them off to fix something that is not broken.
+                errorMessage =
+                    "Steam kept asking for another code without finishing. Your authenticator is "
+                    + "saved, so try Finish Setup again in a moment."
             }
         }
     }

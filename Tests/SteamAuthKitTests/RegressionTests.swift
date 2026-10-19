@@ -196,7 +196,7 @@ struct EncryptionChangeTests {
             _ = try reopened.loadAccounts(passphrase: nil)
             Issue.record("expected a failure")
         } catch let error as StoreError {
-            guard case .accountFileUnreadable = error else {
+            guard case .accountFilesDamaged = error else {
                 Issue.record("wrong error: \(error)")
                 return
             }
@@ -509,5 +509,128 @@ struct ThirdReviewTests {
             url: url, statusCode: 503, httpVersion: "HTTP/2", headerFields: [:]
         )!
         #expect(throws: SteamError.self) { try SteamWeb.checkStatus(serverError) }
+    }
+}
+
+/// Fourth pass: telling a damaged file apart from a wrong passphrase.
+struct FourthReviewTests {
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sda-rev4-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func populated(_ directory: URL, count: UInt64, passphrase: String?) throws -> AccountStore {
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        for steamID in 1 ... count {
+            var account = SteamGuardAccount()
+            account.accountName = "account\(steamID)"
+            account.sharedSecret = "zvIayp3JPvtvX/QGHqsqKBk/44s="
+            account.session = SessionData(steamID: steamID)
+            try store.save(account, passphrase: nil)
+        }
+        if let passphrase {
+            try store.changeEncryption(currentPassphrase: nil, newPassphrase: passphrase)
+        }
+        return store
+    }
+
+    @Test("A correct passphrase is not blamed for one damaged file")
+    func correctPassphraseSurvivesOneDamagedFile() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try populated(directory, count: 3, passphrase: "correct")
+
+        // Bit rot, a half-finished sync, a botched manual edit.
+        try Data("not valid ciphertext".utf8)
+            .write(to: directory.appendingPathComponent("2.maFile"))
+
+        let reopened = AccountStore(directory: directory)
+        try reopened.loadManifest()
+
+        // This used to throw .wrongPassword, so the unlock screen told the user
+        // their correct passphrase was wrong and nothing got them past it.
+        let loaded = try reopened.loadAccounts(passphrase: "correct")
+        #expect(loaded.count == 2)
+        #expect(reopened.damagedFiles == ["2.maFile"])
+        #expect(reopened.unreadableFiles == ["2.maFile"])
+    }
+
+    @Test("A genuinely wrong passphrase is still a wrong passphrase")
+    func wrongPassphraseStillReportsItself() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try populated(directory, count: 3, passphrase: "correct")
+
+        let reopened = AccountStore(directory: directory)
+        try reopened.loadManifest()
+
+        do {
+            _ = try reopened.loadAccounts(passphrase: "wrong")
+            Issue.record("expected a failure")
+        } catch let error as CryptoError {
+            guard case .wrongPassword = error else {
+                Issue.record("wrong error: \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("Re-keying is refused over a damaged file, not just a missing one")
+    func reKeyingRefusesOverDamage() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try populated(directory, count: 2, passphrase: "first")
+
+        try Data("ruined".utf8).write(to: directory.appendingPathComponent("2.maFile"))
+
+        #expect(throws: StoreError.self) {
+            try store.changeEncryption(currentPassphrase: "first", newPassphrase: "second")
+        }
+        // The readable account still opens under the untouched passphrase.
+        let reopened = AccountStore(directory: directory)
+        try reopened.loadManifest()
+        #expect(try reopened.loadAccounts(passphrase: "first").count == 1)
+    }
+
+    @Test("Dropping unreadable entries unblocks a passphrase change")
+    func droppingEntriesUnblocksReKeying() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try populated(directory, count: 2, passphrase: "first")
+
+        // Gone for good: a failed restore, or deleted by hand.
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("2.maFile"))
+        _ = try store.loadAccounts(passphrase: "first")
+        #expect(store.missingFiles == ["2.maFile"])
+
+        // Without this the store could never be re-keyed again, and the error
+        // could only tell the user to restore a file that no longer exists.
+        let dropped = try store.forgetUnreadableEntries()
+        #expect(dropped == ["2.maFile"])
+        #expect(store.unreadableFiles.isEmpty)
+
+        try store.changeEncryption(currentPassphrase: "first", newPassphrase: "second")
+        let reopened = AccountStore(directory: directory)
+        try reopened.loadManifest()
+        #expect(try reopened.loadAccounts(passphrase: "second").count == 1)
+    }
+
+    @Test("Dropping an entry leaves the file itself alone")
+    func droppingEntriesKeepsTheFile() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try populated(directory, count: 2, passphrase: "first")
+
+        let damaged = directory.appendingPathComponent("2.maFile")
+        try Data("ruined".utf8).write(to: damaged)
+        _ = try store.loadAccounts(passphrase: "first")
+
+        _ = try store.forgetUnreadableEntries()
+        // It may still be worth recovering by hand, so it must survive.
+        #expect(FileManager.default.fileExists(atPath: damaged.path))
     }
 }

@@ -131,7 +131,15 @@ public final class AuthenticatorLinker {
         // so reporting rejection would strand the user with a verified phone
         // and a code they cannot send again. Only a definite "still
         // unverified" counts as a rejection.
-        guard let status = try? await phoneStatus() else { return .ready }
+        // Retried once: a single dropped request is common enough that giving
+        // up on it immediately would report every blip as a verified phone,
+        // which is most of the way back to the bug this replaced.
+        var status = try? await phoneStatus()
+        if status == nil {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            status = try? await phoneStatus()
+        }
+        guard let status else { return .ready }
         guard status.verified else {
             throw SteamError.loginFailed(
                 "Steam did not accept that code. Check the SMS and try again."
@@ -199,6 +207,9 @@ public final class AuthenticatorLinker {
         case badSMSCode
         /// Steam kept rejecting our codes, which means the clock is too far off.
         case unableToGenerateCorrectCodes
+        /// Steam kept asking for another code until we ran out of patience.
+        /// Distinct from the above: nothing was rejected, so the clock is fine.
+        case steamKeptAskingForCodes
     }
 
     /// Completes the link using the SMS code Steam sent.
@@ -254,7 +265,7 @@ public final class AuthenticatorLinker {
             if wantMore {
                 // Same reasoning: a flat two-second sleep usually stayed inside
                 // the current window and sent Steam the same code again.
-                guard Date() < deadline else { return .unableToGenerateCorrectCodes }
+                guard Date() < deadline else { return .steamKeptAskingForCodes }
                 try await waitForNextCodeWindow()
                 continue
             }

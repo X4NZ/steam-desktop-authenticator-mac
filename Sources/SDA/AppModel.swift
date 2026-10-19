@@ -78,6 +78,8 @@ final class AppModel: ObservableObject {
     private var bannerDismissTask: Task<Void, Never>?
 
     var storeDirectory: URL { store.directory }
+    /// Manifest entries the last load could not turn into accounts.
+    var unreadableFiles: [String] { store.unreadableFiles }
     var isEncrypted: Bool { store.isEncrypted }
     var currentPassphrase: String? { passphrase }
 
@@ -200,11 +202,10 @@ final class AppModel: ObservableObject {
             lockState = accounts.isEmpty ? .empty : .unlocked
             updateCode()
 
-            if !store.missingFiles.isEmpty {
-                let names = store.missingFiles.prefix(3).joined(separator: ", ")
-                let extra = store.missingFiles.count > 3
-                    ? " and \(store.missingFiles.count - 3) more"
-                    : ""
+            let unreadable = store.unreadableFiles
+            if !unreadable.isEmpty {
+                let names = unreadable.prefix(3).joined(separator: ", ")
+                let extra = unreadable.count > 3 ? " and \(unreadable.count - 3) more" : ""
                 show(
                     .warning,
                     "\(names)\(extra) could not be read, so those accounts are not shown. "
@@ -576,6 +577,22 @@ final class AppModel: ObservableObject {
             selectedAccountID = account.id
             lockState = .unlocked
             updateCode()
+        } catch {
+            show(.error, error.localizedDescription)
+        }
+    }
+
+    /// Drops manifest entries for files that could not be read.
+    ///
+    /// Without this a permanently lost maFile blocks every passphrase change,
+    /// with an error telling the user to restore a file that is gone.
+    func forgetUnreadableEntries() {
+        do {
+            let dropped = try store.forgetUnreadableEntries()
+            guard !dropped.isEmpty else { return }
+            settings = store.manifest
+            show(.info, "Removed \(dropped.count) unreadable entr\(dropped.count == 1 ? "y" : "ies") "
+                + "from manifest.json. The files themselves were left alone.")
         } catch {
             show(.error, error.localizedDescription)
         }

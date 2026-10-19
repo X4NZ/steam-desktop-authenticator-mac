@@ -77,10 +77,10 @@ public enum StoreError: LocalizedError {
     case manifestUnreadable
     case accountFilesMissing([String])
     case cannotReEncryptWithMissingFiles([String])
+    case accountFilesDamaged([String])
     case notEncryptedButPassphraseGiven
     case passphraseRequired
     case accountHasNoSteamID
-    case accountFileUnreadable(String)
     case importFailed([(filename: String, reason: String)])
 
     public var errorDescription: String? {
@@ -93,6 +93,11 @@ public enum StoreError: LocalizedError {
             return "\(listed)\(extra) could not be read, so the passphrase was left alone. "
                 + "Changing it now would leave those files unreadable for good. "
                 + "Restore them, or wait for them to finish downloading, and try again."
+        case .accountFilesDamaged(let names):
+            let listed = names.prefix(3).joined(separator: ", ")
+            let extra = names.count > 3 ? " and \(names.count - 3) more" : ""
+            return "\(listed)\(extra) could not be read, so those accounts are unavailable. "
+                + "Restore them from a backup of your maFiles folder."
         case .accountFilesMissing(let names):
             let listed = names.prefix(3).joined(separator: ", ")
             let extra = names.count > 3 ? " and \(names.count - 3) more" : ""
@@ -103,8 +108,6 @@ public enum StoreError: LocalizedError {
             return "A passphrase is required to read these maFiles."
         case .accountHasNoSteamID:
             return "This account has no SteamID, so it cannot be saved."
-        case .accountFileUnreadable(let name):
-            return "\(name) is not a readable maFile. It may be corrupt; restore it from a backup."
         case .importFailed(let failures):
             let detail = failures
                 .prefix(3)
@@ -219,6 +222,13 @@ public final class AccountStore {
     /// showing the accounts that did load.
     public private(set) var missingFiles: [String] = []
 
+    /// Files that are present but would not decrypt or parse during the last
+    /// load, while other files in the same store did open.
+    public private(set) var damagedFiles: [String] = []
+
+    /// Everything the last load could not turn into an account.
+    public var unreadableFiles: [String] { missingFiles + damagedFiles }
+
     /// Decrypts and decodes every account in the manifest.
     ///
     /// A file missing from disk is skipped rather than fatal: one lost maFile
@@ -236,9 +246,12 @@ public final class AccountStore {
         // Reset up front: assigning only at the end left the last successful
         // load's list in place when this one threw part way through.
         missingFiles = []
+        damagedFiles = []
 
         var accounts = [SteamGuardAccount]()
         var missing = [String]()
+        var damaged = [String]()
+        var decryptedSomething = false
 
         for entry in manifest.entries {
             let url = directory.appendingPathComponent(entry.filename)
@@ -249,22 +262,24 @@ public final class AccountStore {
 
             let json: Data
             if let salt = entry.salt, let iv = entry.iv, let passphrase, !passphrase.isEmpty {
-                let ciphertext = String(decoding: data, as: UTF8.self)
-                let plaintext = try FileEncryptor.decrypt(
-                    ciphertext: ciphertext,
+                guard let plaintext = try? FileEncryptor.decrypt(
+                    ciphertext: String(decoding: data, as: UTF8.self),
                     passphrase: passphrase,
                     salt: salt,
                     iv: iv
-                )
+                ) else {
+                    damaged.append(entry.filename)
+                    continue
+                }
+                decryptedSomething = true
                 json = Data(plaintext.utf8)
             } else {
                 json = data
             }
 
             guard var account = try? JSONDecoder().decode(SteamGuardAccount.self, from: json) else {
-                // Only blame the passphrase when one was actually used.
-                if entry.isEncrypted { throw CryptoError.wrongPassword }
-                throw StoreError.accountFileUnreadable(entry.filename)
+                damaged.append(entry.filename)
+                continue
             }
             // Entries carry the SteamID even when the file predates sessions.
             if account.session == nil, entry.steamID != 0 {
@@ -274,8 +289,23 @@ public final class AccountStore {
         }
 
         missingFiles = missing
-        // Nothing at all came back: there is no partial result to show, so this
-        // is worth failing on.
+        damagedFiles = damaged
+
+        // A file that will not open says something about the passphrase only
+        // while no file has opened. Once one has, the passphrase is
+        // demonstrably right and the rest are damaged — throwing here used to
+        // leave the user retyping a correct passphrase at a screen that would
+        // never let them in, with their other accounts perfectly readable.
+        //
+        // The remaining ambiguity is a store whose every file fails: that is
+        // reported as a wrong passphrase, because a typo is far likelier than
+        // the whole folder rotting at once.
+        if manifest.encrypted, !decryptedSomething, !damaged.isEmpty {
+            throw CryptoError.wrongPassword
+        }
+        if accounts.isEmpty, !damaged.isEmpty {
+            throw StoreError.accountFilesDamaged(damaged)
+        }
         if accounts.isEmpty, !missing.isEmpty {
             throw StoreError.accountFilesMissing(missing)
         }
@@ -337,6 +367,25 @@ public final class AccountStore {
         try saveManifest()
     }
 
+    /// Drops manifest entries whose files could not be read, so a store with a
+    /// permanently lost maFile is not stuck refusing every passphrase change.
+    ///
+    /// The files themselves are left alone: a damaged one may still be worth
+    /// recovering by hand, and deleting it here would destroy the only copy.
+    @discardableResult
+    public func forgetUnreadableEntries() throws -> [String] {
+        let dropped = unreadableFiles
+        guard !dropped.isEmpty else { return [] }
+
+        manifest.entries.removeAll { dropped.contains($0.filename) }
+        if manifest.entries.isEmpty { manifest.encrypted = false }
+        try saveManifest()
+
+        missingFiles = []
+        damagedFiles = []
+        return dropped
+    }
+
     /// Removes an account from the manifest and deletes its maFile.
     ///
     /// This only forgets the account locally; it does not touch Steam. Removing
@@ -367,8 +416,8 @@ public final class AccountStore {
         // would keep its old one and stop opening for good the moment the file
         // came back — an iCloud maFile that had not finished downloading was
         // enough to lose it.
-        guard missingFiles.isEmpty else {
-            throw StoreError.cannotReEncryptWithMissingFiles(missingFiles)
+        guard unreadableFiles.isEmpty else {
+            throw StoreError.cannotReEncryptWithMissingFiles(unreadableFiles)
         }
 
         let encrypt = (newPassphrase?.isEmpty == false)

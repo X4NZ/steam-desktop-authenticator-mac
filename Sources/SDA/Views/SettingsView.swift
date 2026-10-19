@@ -19,9 +19,40 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @EnvironmentObject private var model: AppModel
+    @State private var showDropConfirmation = false
 
     var body: some View {
         Form {
+            // Only present when there is something to fix. A lost maFile blocks
+            // every passphrase change, and the error there can only tell the
+            // user to restore a file that may be gone for good, so the way out
+            // has to live somewhere they can find it.
+            if !model.unreadableFiles.isEmpty {
+                Section {
+                    ForEach(model.unreadableFiles, id: \.self) { name in
+                        Label(name, systemImage: "doc.badge.ellipsis")
+                            .font(.callout)
+                    }
+                    HStack {
+                        Spacer()
+                        Button("Remove These Entries…", role: .destructive) {
+                            showDropConfirmation = true
+                        }
+                        .controlSize(.small)
+                    }
+                } header: {
+                    Text("Unreadable maFiles")
+                } footer: {
+                    Text(
+                        "These are listed in manifest.json but could not be read. Until they are "
+                        + "restored or removed, the passphrase cannot be changed. Removing them "
+                        + "edits manifest.json only — the files themselves stay on disk."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
             Section {
                 LabeledContent("maFiles folder") {
                     HStack(spacing: 8) {
@@ -54,6 +85,19 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog(
+            "Remove these entries from manifest.json?",
+            isPresented: $showDropConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Entries", role: .destructive) { model.forgetUnreadableEntries() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "The .maFile files stay where they are. If one of them is the only copy of an "
+                + "account's secrets, restore it from a backup before removing its entry."
+            )
+        }
     }
 }
 
