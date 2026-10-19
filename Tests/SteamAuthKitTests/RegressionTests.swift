@@ -203,3 +203,142 @@ struct EncryptionChangeTests {
         }
     }
 }
+
+/// Second review pass: parsing, store resilience and on-disk permissions.
+struct SecondReviewTests {
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sda-rev2-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func account(_ name: String, steamID: UInt64) -> SteamGuardAccount {
+        var account = SteamGuardAccount()
+        account.accountName = name
+        account.sharedSecret = "zvIayp3JPvtvX/QGHqsqKBk/44s="
+        account.session = SessionData(steamID: steamID)
+        return account
+    }
+
+    @Test("A length-delimited field larger than Int.max is rejected, not fatal")
+    func oversizedLengthIsRejected() {
+        // Int(length) used to trap here, so any malformed response crashed the
+        // app rather than being treated as unparseable.
+        var bytes: [UInt8] = [0x0A] // field 1, length-delimited
+        bytes += [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01]
+
+        let message = ProtoMessage(Data(bytes))
+        #expect(message.bytes(1) == nil)
+    }
+
+    @Test("Fields before an oversized one still parse")
+    func parsingStopsCleanlyAtTheBadField() {
+        var bytes: [UInt8] = [0x08, 0x2A] // field 1 varint = 42
+        bytes += [0x12] // field 2, length-delimited
+        bytes += [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01]
+
+        let message = ProtoMessage(Data(bytes))
+        #expect(message.varint(1) == 42)
+        #expect(message.bytes(2) == nil)
+    }
+
+    @Test("One missing maFile does not hide the other accounts")
+    func oneMissingFileLeavesTheRestReadable() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        for steamID in UInt64(1) ... 3 {
+            try store.save(account("account\(steamID)", steamID: steamID), passphrase: nil)
+        }
+
+        // Losing one file used to throw, which cost the user all three.
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("2.maFile"))
+
+        let loaded = try store.loadAccounts(passphrase: nil)
+        #expect(loaded.count == 2)
+        #expect(store.missingFiles == ["2.maFile"])
+    }
+
+    @Test("Losing every maFile is still an error")
+    func losingEverythingStillThrows() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        try store.save(account("solo", steamID: 7), passphrase: nil)
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("7.maFile"))
+
+        #expect(throws: StoreError.self) { try store.loadAccounts(passphrase: nil) }
+    }
+
+    @Test("A wrong passphrase is still an error, not a partial load")
+    func wrongPassphraseStillThrows() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        try store.save(account("alice", steamID: 11), passphrase: nil)
+        try store.changeEncryption(currentPassphrase: nil, newPassphrase: "right")
+
+        let reopened = AccountStore(directory: directory)
+        try reopened.loadManifest()
+        #expect(throws: Error.self) { try reopened.loadAccounts(passphrase: "wrong") }
+    }
+
+    @Test("maFiles are never readable by anyone but their owner")
+    func filesAreOwnerOnly() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        try store.save(account("alice", steamID: 99), passphrase: nil)
+        // Saved twice: the second write goes down the replace path rather than
+        // the create path, and that one used to re-expose the file.
+        try store.save(account("alice", steamID: 99), passphrase: nil)
+
+        let path = directory.appendingPathComponent("99.maFile").path
+        let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber
+        #expect(mode?.int16Value == 0o600)
+    }
+
+    @Test("No staging or backup files survive a re-encryption")
+    func reEncryptionLeavesNoDebris() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        try store.save(account("alice", steamID: 21), passphrase: nil)
+        try store.save(account("bob", steamID: 22), passphrase: nil)
+
+        try store.changeEncryption(currentPassphrase: nil, newPassphrase: "s3cret")
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(!names.contains { $0.hasSuffix(".new") || $0.hasSuffix(".bak") })
+        #expect(try store.loadAccounts(passphrase: "s3cret").count == 2)
+    }
+
+    @Test("An escaped identity secret still signs confirmations")
+    func escapedIdentitySecretIsUnescaped() {
+        // shared_secret was already unescaped, identity_secret was not, so an
+        // maFile written with escaped slashes generated codes but could not
+        // sign a single confirmation.
+        let raw = "zvIayp3JPvtvX/QGHqsqKBk/44s="
+        var plain = SteamGuardAccount()
+        plain.identitySecret = raw
+
+        var escaped = SteamGuardAccount()
+        escaped.identitySecret = raw.replacingOccurrences(of: "/", with: "\\/")
+
+        let expected = plain.confirmationHash(forTime: 1_600_000_000, tag: "list")
+        #expect(expected != nil)
+        #expect(escaped.confirmationHash(forTime: 1_600_000_000, tag: "list") == expected)
+    }
+}

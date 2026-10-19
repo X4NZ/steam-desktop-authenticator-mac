@@ -162,7 +162,12 @@ private struct ProtoCursor {
         case .fixed32:
             return readFixed(4).map { .fixed32($0.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }) }
         case .lengthDelimited:
-            guard let length = readVarint(), let payload = readFixed(Int(length)) else { return nil }
+            // Int(length) would trap on a length past Int.max, which is a crash
+            // reachable from any malformed response Steam or a proxy returns.
+            guard let length = readVarint(),
+                  let count = Int(exactly: length),
+                  let payload = readFixed(count)
+            else { return nil }
             return .bytes(payload)
         }
     }

@@ -189,9 +189,21 @@ final class AppModel: ObservableObject {
 
             lockState = accounts.isEmpty ? .empty : .unlocked
             updateCode()
+
+            if !store.missingFiles.isEmpty {
+                let names = store.missingFiles.prefix(3).joined(separator: ", ")
+                let extra = store.missingFiles.count > 3
+                    ? " and \(store.missingFiles.count - 3) more"
+                    : ""
+                show(
+                    .warning,
+                    "\(names)\(extra) could not be read, so those accounts are not shown. "
+                        + "The rest loaded normally."
+                )
+            }
             return true
         } catch {
-            if case StoreError.accountFileMissing = error {
+            if case StoreError.accountFilesMissing = error {
                 show(.error, error.localizedDescription)
             }
             return false

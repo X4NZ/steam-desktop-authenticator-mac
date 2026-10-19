@@ -126,12 +126,11 @@ extension SteamGuardAccount {
     /// no embedded web view are needed — unlike SDA, which renders Steam's page
     /// in WebView2.
     public func fetchConfirmations() async throws -> [Confirmation] {
-        var account = self
-        guard account.session != nil else { throw SteamError.noSession }
+        guard let session else { throw SteamError.noSession }
 
         let time = await SteamTime.shared.currentTime()
         let query = try confirmationQueryItems(forTime: time, tag: "list")
-        let cookies = account.session!.cookieHeader()
+        let cookies = session.cookieHeader()
 
         let data = try await SteamWeb.get(
             "\(SteamEndpoints.community)/mobileconf/getlist",
@@ -177,8 +176,7 @@ extension SteamGuardAccount {
 
     private func send(_ confirmations: [Confirmation], operation: ConfirmationOperation) async throws {
         guard !confirmations.isEmpty else { return }
-        var account = self
-        guard account.session != nil else { throw SteamError.noSession }
+        guard let session else { throw SteamError.noSession }
 
         let time = await SteamTime.shared.currentTime()
         var body = try confirmationQueryItems(forTime: time, tag: operation.tag)
@@ -199,7 +197,7 @@ extension SteamGuardAccount {
         let data = try await SteamWeb.post(
             "\(SteamEndpoints.community)/mobileconf/\(endpoint)",
             body: body,
-            cookies: account.session!.cookieHeader(),
+            cookies: session.cookieHeader(),
             referer: "\(SteamEndpoints.community)/mobileconf/conf"
         )
 

@@ -72,7 +72,7 @@ public struct Manifest: Codable, Sendable {
 
 public enum StoreError: LocalizedError {
     case manifestUnreadable
-    case accountFileMissing(String)
+    case accountFilesMissing([String])
     case notEncryptedButPassphraseGiven
     case passphraseRequired
     case accountHasNoSteamID
@@ -83,8 +83,10 @@ public enum StoreError: LocalizedError {
         switch self {
         case .manifestUnreadable:
             return "manifest.json could not be read. It may be corrupt; restore a backup of your maFiles folder."
-        case .accountFileMissing(let name):
-            return "The file \(name) is listed in manifest.json but missing from disk."
+        case .accountFilesMissing(let names):
+            let listed = names.prefix(3).joined(separator: ", ")
+            let extra = names.count > 3 ? " and \(names.count - 3) more" : ""
+            return "\(listed)\(extra) listed in manifest.json but missing from disk."
         case .notEncryptedButPassphraseGiven:
             return "These maFiles are not encrypted, so no passphrase is needed."
         case .passphraseRequired:
@@ -201,17 +203,34 @@ public final class AccountStore {
 
     // MARK: - Accounts
 
+    /// Files the manifest lists that were not on disk during the last load.
+    ///
+    /// Reported rather than thrown, so the caller can name them while still
+    /// showing the accounts that did load.
+    public private(set) var missingFiles: [String] = []
+
     /// Decrypts and decodes every account in the manifest.
+    ///
+    /// A file missing from disk is skipped rather than fatal: one lost maFile
+    /// must not cost the user access to the other nine. A file that is present
+    /// but will not decrypt still throws, because that means a wrong passphrase
+    /// and loading on regardless would silently drop accounts.
     public func loadAccounts(passphrase: String?) throws -> [SteamGuardAccount] {
-        if manifest.encrypted, passphrase == nil || passphrase!.isEmpty {
+        if manifest.encrypted, let passphrase, passphrase.isEmpty {
+            throw StoreError.passphraseRequired
+        }
+        if manifest.encrypted, passphrase == nil {
             throw StoreError.passphraseRequired
         }
 
         var accounts = [SteamGuardAccount]()
+        var missing = [String]()
+
         for entry in manifest.entries {
             let url = directory.appendingPathComponent(entry.filename)
             guard let data = try? Data(contentsOf: url) else {
-                throw StoreError.accountFileMissing(entry.filename)
+                missing.append(entry.filename)
+                continue
             }
 
             let json: Data
@@ -238,6 +257,13 @@ public final class AccountStore {
                 account.session = SessionData(steamID: entry.steamID)
             }
             accounts.append(account)
+        }
+
+        missingFiles = missing
+        // Nothing at all came back: there is no partial result to show, so this
+        // is worth failing on.
+        if accounts.isEmpty, !missing.isEmpty {
+            throw StoreError.accountFilesMissing(missing)
         }
         return accounts
     }
@@ -348,10 +374,35 @@ public final class AccountStore {
             throw error
         }
 
-        // Past this point the writes are renames, which are atomic per file.
-        for item in staged {
-            _ = try? FileManager.default.replaceItemAt(item.final, withItemAt: item.temporary)
+        // Past this point files are being replaced. Keep a copy of each
+        // original first, so a swap that fails half way can be undone rather
+        // than leaving the folder split across two passphrases.
+        var backups: [(original: URL, backup: URL)] = []
+        var replaced: [URL] = []
+
+        do {
+            for item in staged where FileManager.default.fileExists(atPath: item.final.path) {
+                let backup = directory.appendingPathComponent(item.entry.filename + ".bak")
+                try? FileManager.default.removeItem(at: backup)
+                try FileManager.default.copyItem(at: item.final, to: backup)
+                backups.append((item.final, backup))
+            }
+
+            for item in staged {
+                _ = try FileManager.default.replaceItemAt(item.final, withItemAt: item.temporary)
+                replaced.append(item.final)
+            }
+        } catch {
+            for entry in backups where replaced.contains(entry.original) {
+                try? FileManager.default.removeItem(at: entry.original)
+                try? FileManager.default.moveItem(at: entry.backup, to: entry.original)
+            }
+            for entry in backups { try? FileManager.default.removeItem(at: entry.backup) }
+            discardStaged()
+            throw error
         }
+
+        for entry in backups { try? FileManager.default.removeItem(at: entry.backup) }
 
         manifest.encrypted = encrypt
         for item in staged {
@@ -494,8 +545,39 @@ public final class AccountStore {
     // MARK: - Disk
 
     /// Writes with an owner-only file mode: these files are the account.
+    ///
+    /// The mode is set on the temporary file before any bytes are written to
+    /// it, rather than on the destination afterwards: writing atomically and
+    /// then chmod-ing leaves the secrets briefly readable at whatever the
+    /// umask allows.
     private func write(_ data: Data, to url: URL) throws {
-        try data.write(to: url, options: .atomic)
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).writing")
+        try? FileManager.default.removeItem(at: temporary)
+
+        guard FileManager.default.createFile(
+            atPath: temporary.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            try data.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return
+        }
+
+        do {
+            try data.write(to: temporary)
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+            } else {
+                try FileManager.default.moveItem(at: temporary, to: url)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+
+        // replaceItemAt can carry the destination's old mode across.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

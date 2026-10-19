@@ -152,7 +152,11 @@ public enum Crypto {
 
     public static func randomBytes(_ count: Int) -> Data {
         var bytes = [UInt8](repeating: 0, count: count)
-        _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        // Ignoring this would hand back a buffer of zeroes, and these bytes
+        // become encryption salts and IVs. Predictable ones are worse than
+        // stopping, and the system RNG failing is not a recoverable state.
+        precondition(status == errSecSuccess, "the system random number generator failed")
         return Data(bytes)
     }
 }

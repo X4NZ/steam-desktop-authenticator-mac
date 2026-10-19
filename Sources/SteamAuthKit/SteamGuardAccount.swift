@@ -122,7 +122,9 @@ public struct SteamGuardAccount: Codable, Identifiable, Hashable, Sendable {
     /// Mobile confirmation requests are signed with `identity_secret` over the
     /// current time plus a per-operation tag.
     func confirmationHash(forTime time: Int64, tag: String) -> String? {
-        guard let identitySecret, let key = Data(base64Encoded: identitySecret) else { return nil }
+        guard let identitySecret,
+              let key = Data(base64Encoded: identitySecret.unescapedJSONString)
+        else { return nil }
 
         let tagBytes = Data(tag.utf8.prefix(32))
         var message = Data(count: 8)
