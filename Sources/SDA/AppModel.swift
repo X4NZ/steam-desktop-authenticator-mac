@@ -435,7 +435,7 @@ final class AppModel: ObservableObject {
         checkTimer?.invalidate()
         guard settings.periodicChecking else { return }
 
-        let interval = TimeInterval(max(5, settings.periodicCheckingInterval))
+        let interval = TimeInterval(max(10, settings.periodicCheckingInterval))
         checkTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.runPeriodicCheck() }
         }

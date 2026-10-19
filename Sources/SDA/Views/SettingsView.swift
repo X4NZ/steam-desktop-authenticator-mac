@@ -273,6 +273,16 @@ struct EncryptionSettings: View {
                         Button("Remove Encryption…", role: .destructive) {
                             showRemoveConfirmation = true
                         }
+                        // It needs the current passphrase from the field above,
+                        // which nothing said: an empty field used to produce a
+                        // vague failure after the confirmation dialog.
+                        .disabled(currentPassphrase.isEmpty)
+                    }
+                } footer: {
+                    if currentPassphrase.isEmpty {
+                        Text("Enter your current passphrase above to remove encryption.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }

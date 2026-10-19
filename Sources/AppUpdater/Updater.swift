@@ -196,30 +196,13 @@ public enum Updater {
         to destination: URL,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws {
-        let (bytes, response) = try await URLSession.shared.bytes(from: url)
+        let response = try await FileDownload(destination: destination, progress: progress).run(url)
 
         if let http = response as? HTTPURLResponse, !(200 ..< 300).contains(http.statusCode) {
+            try? FileManager.default.removeItem(at: destination)
             throw UpdateError.downloadFailed("HTTP \(http.statusCode)")
         }
-
-        let expected = response.expectedContentLength
-        var data = Data()
-        if expected > 0 { data.reserveCapacity(Int(expected)) }
-
-        var lastReported = 0.0
-        for try await byte in bytes {
-            data.append(byte)
-            if expected > 0 {
-                let fraction = Double(data.count) / Double(expected)
-                // Throttle: updating the UI per byte would swamp the main actor.
-                if fraction - lastReported > 0.01 {
-                    lastReported = fraction
-                    progress(fraction)
-                }
-            }
-        }
         progress(1.0)
-        try data.write(to: destination)
     }
 
     private static func findApp(in directory: URL) -> URL? {
@@ -325,5 +308,73 @@ public enum Updater {
             throw UpdateError.installFailed(output.isEmpty ? "exit \(process.terminationStatus)" : output)
         }
         return output
+    }
+}
+
+/// Downloads a file to disk, reporting progress as it goes.
+///
+/// This was once a `for try await byte in bytes` loop accumulating into
+/// `Data`. That held the whole archive in memory and, measured against the
+/// 1.5 MB v1.2.1 asset, took 8.9s where a plain fetch took 0.44s — the cost
+/// is the per-byte async iteration, so buffering the appends does not help
+/// (8.4s when tried). The async `download` methods are fast but deliver no
+/// progress at all, not even through a delegate, so the classic download task
+/// is the only way to get both. Measured at 0.52s with progress intact.
+private final class FileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let destination: URL
+    private let progress: @Sendable (Double) -> Void
+    private var continuation: CheckedContinuation<URLResponse, Error>?
+    private var lastReported = 0.0
+
+    init(destination: URL, progress: @escaping @Sendable (Double) -> Void) {
+        self.destination = destination
+        self.progress = progress
+    }
+
+    func run(_ url: URL) async throws -> URLResponse {
+        let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            session.downloadTask(with: url).resume()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let fraction = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+        // Throttled: a callback per packet would swamp the main actor.
+        guard fraction - lastReported > 0.01 else { return }
+        lastReported = fraction
+        progress(fraction)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        // The file has to be moved here: it is gone once this method returns.
+        do {
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: location, to: destination)
+            continuation?.resume(returning: downloadTask.response ?? URLResponse())
+        } catch {
+            continuation?.resume(throwing: error)
+        }
+        continuation = nil
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error else { return } // Success already resumed above.
+        continuation?.resume(throwing: Updater.UpdateError.downloadFailed(error.localizedDescription))
+        continuation = nil
     }
 }

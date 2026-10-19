@@ -39,7 +39,7 @@ public struct Manifest: Codable, Sendable {
     public var firstRun: Bool = true
     public var entries: [ManifestEntry] = []
     public var periodicChecking: Bool = false
-    public var periodicCheckingInterval: Int = 5
+    public var periodicCheckingInterval: Int = 30
     public var checkAllAccounts: Bool = false
     public var autoConfirmMarketTransactions: Bool = false
     public var autoConfirmTrades: Bool = false
@@ -63,7 +63,10 @@ public struct Manifest: Codable, Sendable {
         firstRun = container.lenientBool(.firstRun) ?? true
         entries = (try? container.decodeIfPresent([ManifestEntry].self, forKey: .entries)) ?? []
         periodicChecking = container.lenientBool(.periodicChecking) ?? false
-        periodicCheckingInterval = container.lenientInt(.periodicCheckingInterval) ?? 5
+        // SDA's own default is 5 seconds, which polls Steam hard enough to
+        // risk a rate limit and is not one of the intervals this app offers.
+        // Clamped on the way in so the stored value and the interface agree.
+        periodicCheckingInterval = max(10, container.lenientInt(.periodicCheckingInterval) ?? 30)
         checkAllAccounts = container.lenientBool(.checkAllAccounts) ?? false
         autoConfirmMarketTransactions = container.lenientBool(.autoConfirmMarketTransactions) ?? false
         autoConfirmTrades = container.lenientBool(.autoConfirmTrades) ?? false
