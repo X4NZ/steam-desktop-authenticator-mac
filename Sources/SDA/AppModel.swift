@@ -59,8 +59,10 @@ final class AppModel: ObservableObject {
     private var passphrase: String?
     private var codeTimer: Timer?
     private var checkTimer: Timer?
-    /// Confirmation ids already surfaced, so a notification fires only once.
-    private var notifiedConfirmationIDs = Set<UInt64>()
+    /// Confirmation ids already surfaced, per account, so a notification fires
+    /// only once. Keyed by account because one shared set meant each account's
+    /// pruning pass threw away every other account's ids.
+    private var notifiedConfirmationIDs: [String: Set<UInt64>] = [:]
     /// When the Steam clock offset was last re-checked from the timer.
     private var lastAlignCheck = Date()
     /// Guards against a slow check still running when the timer fires again.
@@ -118,9 +120,11 @@ final class AppModel: ObservableObject {
             } else {
                 lockState = .locked
             }
-        } else {
-            _ = unlock(passphrase: nil, remember: false)
-            lockState = .unlocked
+        } else if !unlock(passphrase: nil, remember: false) {
+            // unlock() sets the state itself when it works. Forcing .unlocked
+            // regardless used to paper over a failed load, leaving an empty
+            // main window with nothing explaining why.
+            lockState = .empty
         }
 
         startCodeTimer()
@@ -361,17 +365,30 @@ final class AppModel: ObservableObject {
 
     // MARK: - Confirmations
 
+    /// True while the account this work was started for is still the one on
+    /// screen. Clearing the list on a switch is not enough on its own: a fetch
+    /// already in flight would otherwise write the old account's confirmations
+    /// back into the list, under the new account's name and key.
+    private func isStillSelected(_ id: String) -> Bool {
+        selectedAccount?.id == id
+    }
+
     func loadConfirmations(for account: SteamGuardAccount) async {
+        let requested = account.id
         isLoadingConfirmations = true
-        defer { isLoadingConfirmations = false }
+        defer { if isStillSelected(requested) { isLoadingConfirmations = false } }
 
         await refreshSessionsIfNeeded()
-        let current = accounts.first { $0.id == account.id } ?? account
+        guard isStillSelected(requested) else { return }
+        let current = accounts.first { $0.id == requested } ?? account
 
         do {
-            confirmations = try await current.fetchConfirmations()
-            pendingCounts[current.id] = confirmations.count
+            let fetched = try await current.fetchConfirmations()
+            pendingCounts[requested] = fetched.count
+            guard isStillSelected(requested) else { return }
+            confirmations = fetched
         } catch {
+            guard isStillSelected(requested) else { return }
             confirmations = []
             show(.error, error.localizedDescription)
         }
@@ -379,14 +396,16 @@ final class AppModel: ObservableObject {
 
     func act(on confirmation: Confirmation, accept: Bool) async {
         guard let account = selectedAccount else { return }
+        let owner = account.id
         do {
             if accept {
                 try await account.accept(confirmation)
             } else {
                 try await account.deny(confirmation)
             }
+            guard isStillSelected(owner) else { return }
             confirmations.removeAll { $0.id == confirmation.id }
-            pendingCounts[account.id] = confirmations.count
+            pendingCounts[owner] = confirmations.count
             show(.success, accept ? "Confirmed." : "Cancelled.")
         } catch {
             show(.error, error.localizedDescription)
@@ -439,8 +458,10 @@ final class AppModel: ObservableObject {
 
             do {
                 let pending = try await account.fetchConfirmations()
-                pendingCounts[account.id] = pending.count
-                guard !pending.isEmpty else { continue }
+                guard !pending.isEmpty else {
+                    pendingCounts[account.id] = 0
+                    continue
+                }
 
                 let autoAccept = pending.filter { confirmation in
                     switch confirmation.type {
@@ -456,16 +477,20 @@ final class AppModel: ObservableObject {
                         title: "Auto-confirmed \(autoAccept.count) item\(autoAccept.count == 1 ? "" : "s")",
                         body: account.accountName ?? ""
                     )
-                    for confirmation in autoAccept { notifiedConfirmationIDs.insert(confirmation.id) }
+                    for confirmation in autoAccept {
+                        notifiedConfirmationIDs[account.id, default: []].insert(confirmation.id)
+                    }
                 }
+
+                var notified = notifiedConfirmationIDs[account.id] ?? []
 
                 let remaining = pending.filter { confirmation in
                     !autoAccept.contains { $0.id == confirmation.id }
-                        && !notifiedConfirmationIDs.contains(confirmation.id)
+                        && !notified.contains(confirmation.id)
                 }
 
                 for confirmation in remaining {
-                    notifiedConfirmationIDs.insert(confirmation.id)
+                    notified.insert(confirmation.id)
                     await notify(
                         title: confirmation.headline,
                         body: ([account.accountName ?? ""] + confirmation.summary)
@@ -474,15 +499,22 @@ final class AppModel: ObservableObject {
                     )
                 }
 
+                let outstanding = pending.filter { pendingItem in
+                    !autoAccept.contains { $0.id == pendingItem.id }
+                }
+                // Counted after auto-accept, not before: the badge used to keep
+                // advertising items this pass had already confirmed.
+                pendingCounts[account.id] = outstanding.count
+
                 if account.id == selectedAccount?.id {
-                    confirmations = pending.filter { pendingItem in
-                        !autoAccept.contains { $0.id == pendingItem.id }
-                    }
+                    confirmations = outstanding
                 }
                 // Forget ids that are no longer pending, so this set tracks
-                // what is outstanding rather than growing without limit.
+                // what is outstanding rather than growing without limit. Scoped
+                // to this account: pruning the shared set inside the loop used
+                // to drop the other accounts' ids and re-notify them next pass.
                 let stillPending = Set(pending.map(\.id))
-                notifiedConfirmationIDs.formIntersection(
+                notifiedConfirmationIDs[account.id] = notified.intersection(
                     stillPending.union(autoAccept.map(\.id))
                 )
             } catch {
@@ -531,6 +563,10 @@ final class AppModel: ObservableObject {
         do {
             try store.forget(steamID: steamID)
             accounts.removeAll { $0.id == account.id }
+            // Otherwise its badge count kept inflating the menu bar total for
+            // the rest of the session.
+            pendingCounts.removeValue(forKey: account.id)
+            notifiedConfirmationIDs.removeValue(forKey: account.id)
             settings = store.manifest
             selectedAccountID = accounts.first?.id
             if accounts.isEmpty { lockState = .empty }

@@ -39,7 +39,7 @@ public actor SteamTime {
     }
 
     public func align() async {
-        let localTime = Int64(Date().timeIntervalSince1970)
+        let before = Date().timeIntervalSince1970
         do {
             let data = try await SteamWeb.post(
                 "\(SteamEndpoints.api)/ITwoFactorService/QueryTime/v1/",
@@ -51,6 +51,11 @@ public actor SteamTime {
                   let serverTime = Int64("\(serverTimeText)")
             else { return }
 
+            // The midpoint of the request, not its start. Timing from before
+            // the call folded the whole round trip into the offset — around
+            // 0.3s on a normal connection, which is enough to move the
+            // rounded offset by a second and shift every code window with it.
+            let localTime = Int64((before + Date().timeIntervalSince1970) / 2)
             offset = serverTime - localTime
             isAligned = true
             lastAligned = Date()
