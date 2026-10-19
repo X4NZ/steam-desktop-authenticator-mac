@@ -64,6 +64,10 @@ final class AppModel: ObservableObject {
     // MARK: Internals
 
     private let store: AccountStore
+    /// Not private: tests replace it to drive timing the live path cannot.
+    var service: ConfirmationService
+    /// Replaced in tests, which must not reach the real notification centre.
+    var notifier: (@MainActor (String, String) async -> Void)?
     private var passphrase: String?
     private var codeTimer: Timer?
     private var checkTimer: Timer?
@@ -85,8 +89,9 @@ final class AppModel: ObservableObject {
     var isEncrypted: Bool { store.isEncrypted }
     var currentPassphrase: String? { passphrase }
 
-    init(store: AccountStore = AccountStore()) {
+    init(store: AccountStore = AccountStore(), service: ConfirmationService = .live) {
         self.store = store
+        self.service = service
     }
 
     deinit {
@@ -408,7 +413,7 @@ final class AppModel: ObservableObject {
         let current = accounts.first { $0.id == requested } ?? account
 
         do {
-            let fetched = try await current.fetchConfirmations()
+            let fetched = try await service.fetch(current)
             pendingCounts[requested] = fetched.count
             guard isStillSelected(requested) else { return }
             confirmations = fetched
@@ -423,11 +428,7 @@ final class AppModel: ObservableObject {
         guard let account = selectedAccount else { return }
         let owner = account.id
         do {
-            if accept {
-                try await account.accept(confirmation)
-            } else {
-                try await account.deny(confirmation)
-            }
+            try await service.send(account, [confirmation], accept)
             if isStillSelected(owner) {
                 confirmations.removeAll { $0.id == confirmation.id }
                 pendingCounts[owner] = confirmations.count
@@ -449,11 +450,7 @@ final class AppModel: ObservableObject {
         let owner = account.id
         let all = confirmations
         do {
-            if accept {
-                try await account.accept(all)
-            } else {
-                try await account.deny(all)
-            }
+            try await service.send(account, all, accept)
             // Owner-keyed, so it holds whether or not the selection moved.
             pendingCounts[owner] = 0
             guard isStillSelected(owner) else { return }
@@ -478,7 +475,8 @@ final class AppModel: ObservableObject {
 
     /// Polls for confirmations in the background, auto-accepting the categories
     /// the user opted into and notifying about the rest.
-    private func runPeriodicCheck() async {
+    /// Not private so tests can run a cycle without waiting on the timer.
+    func runPeriodicCheck() async {
         guard lockState == .unlocked else { return }
         guard !isRunningPeriodicCheck else { return }
         isRunningPeriodicCheck = true
@@ -492,7 +490,7 @@ final class AppModel: ObservableObject {
             guard account.session != nil else { continue }
 
             do {
-                let pending = try await account.fetchConfirmations()
+                let pending = try await service.fetch(account)
                 guard !pending.isEmpty else {
                     pendingCounts[account.id] = 0
                     continue
@@ -507,7 +505,7 @@ final class AppModel: ObservableObject {
                 }
 
                 if !autoAccept.isEmpty {
-                    try await account.accept(autoAccept)
+                    try await service.send(account, autoAccept, true)
                     await notify(
                         title: "Auto-confirmed \(autoAccept.count) item\(autoAccept.count == 1 ? "" : "s")",
                         body: account.accountName ?? ""
@@ -747,6 +745,10 @@ final class AppModel: ObservableObject {
     }
 
     private func notify(title: String, body: String) async {
+        if let notifier {
+            await notifier(title, body)
+            return
+        }
         guard Bundle.main.bundleIdentifier != nil else { return }
 
         let content = UNMutableNotificationContent()
@@ -776,4 +778,26 @@ final class AppModel: ObservableObject {
             if self?.banner?.id == shown { self?.banner = nil }
         }
     }
+}
+
+/// The Steam side of confirmations, behind a seam.
+///
+/// Injected so tests can drive the timing these methods exist to get right: a
+/// fetch still in flight when the user switches account, and notifications
+/// that must fire once per account rather than once per polling cycle. Neither
+/// is reachable through the live implementation without a Steam session.
+struct ConfirmationService {
+    var fetch: (SteamGuardAccount) async throws -> [Confirmation]
+    var send: (SteamGuardAccount, [Confirmation], Bool) async throws -> Void
+
+    static let live = ConfirmationService(
+        fetch: { try await $0.fetchConfirmations() },
+        send: { account, items, accept in
+            if accept {
+                try await account.accept(items)
+            } else {
+                try await account.deny(items)
+            }
+        }
+    )
 }
