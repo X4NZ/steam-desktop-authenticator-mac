@@ -316,17 +316,17 @@ public final class AccountStore {
             damagedFiles += damaged
         }
 
-        // A file that will not open says something about the passphrase only
-        // while no file has opened. Once one has, the passphrase is
+        // A failure only a key could explain says something about the key
+        // only while no file has opened. Once one has, the passphrase is
         // demonstrably right and the rest are damaged — throwing here used to
         // leave the user retyping a correct passphrase at a screen that would
         // never let them in, with their other accounts perfectly readable.
         //
-        // The remaining ambiguity is a store whose every file fails: that is
-        // reported as a wrong passphrase, because a typo is far likelier than
-        // the whole folder rotting at once.
-        // Only a failure a key could explain is evidence about the key;
-        // structural damage must not be dressed up as a wrong passphrase.
+        // What stays ambiguous is a store where every file is well formed and
+        // none of them decrypts: that is reported as a wrong passphrase,
+        // because a typo is far likelier than every file rotting at once.
+        // Structural damage is never routed here, being provable without a
+        // key.
         if manifest.encrypted, !decryptedSomething, !damaged.isEmpty {
             throw CryptoError.wrongPassword
         }

@@ -51,14 +51,28 @@ public enum FileEncryptor {
         return ciphertext.base64EncodedString()
     }
 
+    /// Decodes the stored base64, tolerating noise a copy may have added.
+    ///
+    /// `.ignoreUnknownCharacters` is what makes a byte order mark survivable:
+    /// an maFile opened and resaved in a Windows editor gains one, every
+    /// ciphertext byte intact, and strict decoding would write the account off
+    /// as destroyed. The block-size check below is what still catches real
+    /// rubbish, so being lenient here costs nothing.
+    private static func decodeCiphertext(_ ciphertext: String) -> Data? {
+        let trimmed = ciphertext.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return Data(base64Encoded: trimmed, options: .ignoreUnknownCharacters)
+    }
+
     /// Whether this is even shaped like something we wrote.
     ///
-    /// A wrong passphrase never alters the file's bytes, so ciphertext that is
-    /// not valid base64 is damaged no matter what passphrase is offered. That
-    /// makes this the one check that can tell the two apart.
+    /// A wrong passphrase never alters the file's bytes, so ciphertext that
+    /// cannot be the output of this cipher is damaged no matter what
+    /// passphrase is offered. That makes this the one check able to tell the
+    /// two apart — but it has to be sure, because the interface treats damage
+    /// as grounds for dropping the entry holding the file's only salt.
     public static func isWellFormed(ciphertext: String) -> Bool {
-        let trimmed = ciphertext.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = Data(base64Encoded: trimmed) else { return false }
+        guard let data = decodeCiphertext(ciphertext) else { return false }
         // AES-CBC output is whole blocks, and PKCS#7 means at least one.
         return data.count >= ivLength && data.count % ivLength == 0
     }
@@ -69,8 +83,7 @@ public enum FileEncryptor {
         salt: String,
         iv: String
     ) throws -> String {
-        let trimmed = ciphertext.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let cipherData = Data(base64Encoded: trimmed) else { throw CryptoError.wrongPassword }
+        guard let cipherData = decodeCiphertext(ciphertext) else { throw CryptoError.wrongPassword }
         guard let ivData = Data(base64Encoded: iv) else { throw CryptoError.badIVSize }
 
         let derivedKey = try key(passphrase: passphrase, salt: salt)

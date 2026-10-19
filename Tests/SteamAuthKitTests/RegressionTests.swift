@@ -751,3 +751,85 @@ struct FifthReviewTests {
         #expect(previous.entries.contains { $0.filename == "2.maFile" && $0.salt != nil })
     }
 }
+
+/// Sixth pass: being sure before calling a file destroyed.
+struct SixthReviewTests {
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sda-rev6-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func encryptedStore(
+        _ directory: URL,
+        count: UInt64,
+        passphrase: String
+    ) throws -> AccountStore {
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        for steamID in 1 ... count {
+            var account = SteamGuardAccount()
+            account.accountName = "account\(steamID)"
+            account.sharedSecret = "zvIayp3JPvtvX/QGHqsqKBk/44s="
+            account.session = SessionData(steamID: steamID)
+            try store.save(account, passphrase: nil)
+        }
+        try store.changeEncryption(currentPassphrase: nil, newPassphrase: passphrase)
+        return store
+    }
+
+    @Test("A byte order mark does not destroy an maFile")
+    func byteOrderMarkIsSurvivable() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try encryptedStore(directory, count: 2, passphrase: "correct")
+
+        // An maFile opened and resaved in a Windows editor gains one of these,
+        // with every ciphertext byte intact. Strict base64 decoding called that
+        // structural damage, and the interface treats damage as grounds for
+        // dropping the entry that holds the file's only salt.
+        let target = directory.appendingPathComponent("2.maFile")
+        let original = try Data(contentsOf: target)
+        try (Data([0xEF, 0xBB, 0xBF]) + original).write(to: target)
+
+        let loaded = try store.loadAccounts(passphrase: "correct")
+        #expect(loaded.count == 2, "it should decrypt, not merely be forgiven")
+        #expect(store.damagedFiles.isEmpty)
+    }
+
+    @Test("Stray newlines in an maFile are survivable too")
+    func wrappedBase64IsSurvivable() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try encryptedStore(directory, count: 2, passphrase: "correct")
+
+        // Some tools hard-wrap base64 at 64 columns.
+        let target = directory.appendingPathComponent("2.maFile")
+        let text = String(decoding: try Data(contentsOf: target), as: UTF8.self)
+        let wrapped = stride(from: 0, to: text.count, by: 64).map { offset -> String in
+            let start = text.index(text.startIndex, offsetBy: offset)
+            let end = text.index(start, offsetBy: min(64, text.count - offset))
+            return String(text[start ..< end])
+        }.joined(separator: "\r\n")
+        try Data(wrapped.utf8).write(to: target)
+
+        #expect(try store.loadAccounts(passphrase: "correct").count == 2)
+        #expect(store.damagedFiles.isEmpty)
+    }
+
+    @Test("Real rubbish is still called damaged")
+    func actualRubbishIsStillDamage() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try encryptedStore(directory, count: 2, passphrase: "correct")
+
+        // Leniency must not go so far as to accept this: the whole point of
+        // naming damage is that dropping the entry is then safe.
+        try Data("ruined".utf8).write(to: directory.appendingPathComponent("2.maFile"))
+
+        #expect(try store.loadAccounts(passphrase: "correct").count == 1)
+        #expect(store.damagedFiles == ["2.maFile"])
+    }
+}
