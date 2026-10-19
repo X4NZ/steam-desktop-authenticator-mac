@@ -49,6 +49,10 @@ final class AppModel: ObservableObject {
     /// Set when a newer release is found, which presents the update sheet.
     @Published var availableUpdate: Updater.Release?
     @Published var isCheckingForUpdate = false
+    /// Manifest entries the last load could not turn into accounts. Published
+    /// rather than read through to the store, which observes nothing, so the
+    /// settings panel that offers to drop them cannot show a stale list.
+    @Published var unreadableFiles: [String] = []
 
     struct Banner: Identifiable, Equatable {
         enum Kind { case info, success, warning, error }
@@ -78,8 +82,6 @@ final class AppModel: ObservableObject {
     private var bannerDismissTask: Task<Void, Never>?
 
     var storeDirectory: URL { store.directory }
-    /// Manifest entries the last load could not turn into accounts.
-    var unreadableFiles: [String] { store.unreadableFiles }
     var isEncrypted: Bool { store.isEncrypted }
     var currentPassphrase: String? { passphrase }
 
@@ -202,8 +204,9 @@ final class AppModel: ObservableObject {
             lockState = accounts.isEmpty ? .empty : .unlocked
             updateCode()
 
-            let unreadable = store.unreadableFiles
-            if !unreadable.isEmpty {
+            unreadableFiles = store.unreadableFiles
+            if !unreadableFiles.isEmpty {
+                let unreadable = unreadableFiles
                 let names = unreadable.prefix(3).joined(separator: ", ")
                 let extra = unreadable.count > 3 ? " and \(unreadable.count - 3) more" : ""
                 show(
@@ -215,6 +218,7 @@ final class AppModel: ObservableObject {
             return true
         } catch {
             lastUnlockError = error.localizedDescription
+            unreadableFiles = store.unreadableFiles
 
             // A wrong or absent passphrase is reported inline by the unlock
             // screen. Everything else used to vanish entirely.
@@ -270,7 +274,10 @@ final class AppModel: ObservableObject {
 
     /// Checks a passphrase against the stored files without changing anything.
     func verifyPassphrase(_ candidate: String) -> Bool {
-        store.verify(passphrase: candidate)
+        let verified = store.verify(passphrase: candidate)
+        // verify() runs a whole load, so the store's diagnostics moved.
+        unreadableFiles = store.unreadableFiles
+        return verified
     }
 
     func lock() {
@@ -591,8 +598,25 @@ final class AppModel: ObservableObject {
             let dropped = try store.forgetUnreadableEntries()
             guard !dropped.isEmpty else { return }
             settings = store.manifest
+            unreadableFiles = store.unreadableFiles
+
+            // The point of this is to rescue a store that would not load, so
+            // the lock state has to be re-examined. Leaving it alone kept the
+            // unlock screen asking for a passphrase to open entries that are
+            // no longer there.
+            if store.manifest.entries.isEmpty {
+                accounts = []
+                confirmations = []
+                passphrase = nil
+                selectedAccountID = nil
+                lockState = .empty
+            } else if case .failed = lockState {
+                _ = unlock(passphrase: nil, remember: false)
+            }
+
             show(.info, "Removed \(dropped.count) unreadable entr\(dropped.count == 1 ? "y" : "ies") "
-                + "from manifest.json. The files themselves were left alone.")
+                + "from manifest.json. The files themselves were left alone, and "
+                + "manifest.json.bak holds the previous version.")
         } catch {
             show(.error, error.localizedDescription)
         }

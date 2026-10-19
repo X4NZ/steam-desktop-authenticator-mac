@@ -634,3 +634,97 @@ struct FourthReviewTests {
         #expect(FileManager.default.fileExists(atPath: damaged.path))
     }
 }
+
+/// Fifth pass: a mistyped passphrase must not look like a damaged store.
+struct FifthReviewTests {
+
+    private func encryptedStore(
+        _ directory: URL,
+        count: UInt64,
+        passphrase: String
+    ) throws -> AccountStore {
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        for steamID in 1 ... count {
+            var account = SteamGuardAccount()
+            account.accountName = "account\(steamID)"
+            account.sharedSecret = "zvIayp3JPvtvX/QGHqsqKBk/44s="
+            account.session = SessionData(steamID: steamID)
+            try store.save(account, passphrase: nil)
+        }
+        try store.changeEncryption(currentPassphrase: nil, newPassphrase: passphrase)
+        return store
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sda-rev5-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    @Test("A mistyped passphrase does not mark the whole store damaged")
+    func typoDoesNotCondemnTheStore() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try encryptedStore(directory, count: 3, passphrase: "correct")
+
+        // Anywhere that calls verify() — the Touch ID field in Settings does.
+        #expect(!store.verify(passphrase: "typo"))
+
+        // Every file failed to decrypt, but that is evidence about the
+        // passphrase, not about the files. Publishing it let the interface
+        // offer to drop all three manifest entries, and the salts live only in
+        // manifest.json, so that made the ciphertext unrecoverable.
+        #expect(store.damagedFiles.isEmpty)
+        #expect(store.unreadableFiles.isEmpty)
+        #expect(try store.forgetUnreadableEntries().isEmpty)
+        #expect(try store.loadAccounts(passphrase: "correct").count == 3)
+    }
+
+    @Test("Damage is still reported when the passphrase is proven right")
+    func damageIsReportedOnceThePassphraseIsProven() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try encryptedStore(directory, count: 3, passphrase: "correct")
+
+        try Data("ruined".utf8).write(to: directory.appendingPathComponent("2.maFile"))
+        #expect(try store.loadAccounts(passphrase: "correct").count == 2)
+        #expect(store.damagedFiles == ["2.maFile"])
+    }
+
+    @Test("A single damaged file is not reported as damage it cannot prove")
+    func loneDamagedFileStaysAmbiguous() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try encryptedStore(directory, count: 1, passphrase: "correct")
+
+        try Data("ruined".utf8).write(to: directory.appendingPathComponent("1.maFile"))
+
+        // Nothing opened, so this is indistinguishable from a wrong
+        // passphrase. It must resolve towards safety: no damage list, so
+        // nothing offers to delete the entry.
+        #expect(throws: CryptoError.self) { try store.loadAccounts(passphrase: "correct") }
+        #expect(store.damagedFiles.isEmpty)
+        #expect(try store.forgetUnreadableEntries().isEmpty)
+    }
+
+    @Test("Dropping entries keeps the previous manifest beside it")
+    func droppingEntriesBacksUpTheManifest() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try encryptedStore(directory, count: 2, passphrase: "first")
+
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("2.maFile"))
+        _ = try store.loadAccounts(passphrase: "first")
+        _ = try store.forgetUnreadableEntries()
+
+        // The dropped entry's salt is only recoverable from this copy.
+        let backup = directory.appendingPathComponent("manifest.json.bak")
+        #expect(FileManager.default.fileExists(atPath: backup.path))
+
+        let previous = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: backup))
+        #expect(previous.entries.count == 2)
+        #expect(previous.entries.contains { $0.filename == "2.maFile" && $0.salt != nil })
+    }
+}

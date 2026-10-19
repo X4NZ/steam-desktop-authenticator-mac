@@ -289,7 +289,16 @@ public final class AccountStore {
         }
 
         missingFiles = missing
-        damagedFiles = damaged
+
+        // A wrong passphrase makes every encrypted file look damaged. That
+        // list must not escape: the interface offers to drop the manifest
+        // entries for unreadable files, and encryption_salt lives nowhere
+        // else, so acting on it after a single typo would leave ciphertext on
+        // disk that nothing can ever decrypt again. Damage is reported only
+        // once some file has opened and proved the passphrase right.
+        if !manifest.encrypted || decryptedSomething {
+            damagedFiles = damaged
+        }
 
         // A file that will not open says something about the passphrase only
         // while no file has opened. Once one has, the passphrase is
@@ -376,6 +385,12 @@ public final class AccountStore {
     public func forgetUnreadableEntries() throws -> [String] {
         let dropped = unreadableFiles
         guard !dropped.isEmpty else { return [] }
+
+        // The salts for every remaining account live in this file and nowhere
+        // else, so an irreversible edit to it gets a copy kept beside it.
+        if let current = try? Data(contentsOf: manifestURL) {
+            try? current.write(to: directory.appendingPathComponent("manifest.json.bak"))
+        }
 
         manifest.entries.removeAll { dropped.contains($0.filename) }
         if manifest.entries.isEmpty { manifest.encrypted = false }
