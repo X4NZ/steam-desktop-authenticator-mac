@@ -135,17 +135,7 @@ public enum SteamWeb {
         }
 
         let (data, response) = try await send(urlRequest)
-
-        if let http = response as? HTTPURLResponse {
-            let eresult = http.value(forHTTPHeaderField: "x-eresult").flatMap(Int.init) ?? 1
-            let message = http.value(forHTTPHeaderField: "x-error_message")
-
-            // 1 is EResult.OK. Anything else means the body is not a usable response.
-            if eresult != 1 {
-                throw SteamError.apiError(eresult: eresult, message: message)
-            }
-        }
-
+        try check(response)
         return ProtoMessage(data)
     }
 
@@ -153,10 +143,35 @@ public enum SteamWeb {
 
     private static func perform(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await send(request)
-        if let http = response as? HTTPURLResponse, !(200 ..< 300).contains(http.statusCode) {
+        try check(response)
+        return data
+    }
+
+    /// Steam reports failures two ways: an `x-eresult` header on an otherwise
+    /// normal 200, and ordinary HTTP status codes when something upstream of
+    /// the API breaks.
+    ///
+    /// Both have to be examined. Treating a missing header as success while
+    /// ignoring the status meant a 503 carrying an HTML error page parsed as an
+    /// empty response, and the caller blamed the user's credentials for what
+    /// was really Steam being down.
+    static func check(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else { return }
+
+        if let raw = http.value(forHTTPHeaderField: "x-eresult"), let eresult = Int(raw) {
+            // 1 is EResult.OK.
+            guard eresult == 1 else {
+                throw SteamError.apiError(
+                    eresult: eresult,
+                    message: http.value(forHTTPHeaderField: "x-error_message")
+                )
+            }
+            return
+        }
+
+        guard (200 ..< 300).contains(http.statusCode) else {
             throw SteamError.httpStatus(http.statusCode)
         }
-        return data
     }
 
     private static func send(_ request: URLRequest) async throws -> (Data, URLResponse) {

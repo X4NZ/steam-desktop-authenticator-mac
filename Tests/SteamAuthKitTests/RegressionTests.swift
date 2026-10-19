@@ -342,3 +342,47 @@ struct SecondReviewTests {
         #expect(escaped.confirmationHash(forTime: 1_600_000_000, tag: "list") == expected)
     }
 }
+
+/// Steam's two ways of reporting failure, which used to be read as success.
+struct ResponseCheckingTests {
+
+    private func response(status: Int, headers: [String: String] = [:]) -> HTTPURLResponse {
+        HTTPURLResponse(
+            url: URL(string: "https://api.steampowered.com/x")!,
+            statusCode: status,
+            httpVersion: "HTTP/2",
+            headerFields: headers
+        )!
+    }
+
+    @Test("An OK eresult passes")
+    func okEresultPasses() throws {
+        // What QueryTime and GetPasswordRSAPublicKey actually send back.
+        try SteamWeb.check(response(status: 200, headers: ["x-eresult": "1"]))
+    }
+
+    @Test("A failing eresult is surfaced with its message")
+    func failingEresultThrows() {
+        #expect(throws: SteamError.self) {
+            try SteamWeb.check(response(
+                status: 200,
+                headers: ["x-eresult": "5", "x-error_message": "invalid password"]
+            ))
+        }
+    }
+
+    @Test("A server error without an eresult header is not treated as success")
+    func serverErrorWithoutHeaderThrows() {
+        // This was the gap: a 503 carrying an HTML error page parsed as an
+        // empty protobuf message, and login reported bad credentials instead
+        // of Steam being down.
+        #expect(throws: SteamError.self) { try SteamWeb.check(response(status: 503)) }
+        #expect(throws: SteamError.self) { try SteamWeb.check(response(status: 429)) }
+    }
+
+    @Test("A plain 200 without the header still passes")
+    func plainSuccessPasses() throws {
+        // The /mobileconf/ pages send no eresult header at all.
+        try SteamWeb.check(response(status: 200))
+    }
+}

@@ -121,6 +121,17 @@ public final class AuthenticatorLinker {
             "\(SteamEndpoints.api)/IPhoneService/VerifyAccountPhoneWithCode/v1/",
             body: [URLQueryItem(name: "code", value: code.trimmingCharacters(in: .whitespaces))]
         )
+
+        // This used to return .ready unconditionally, so a wrong code walked
+        // on into addAuthenticator and failed there with something unrelated.
+        // The account's own phone status is the answer that cannot be faked by
+        // a 200 with an empty body.
+        let status = try await phoneStatus()
+        guard status.verified else {
+            throw SteamError.loginFailed(
+                "Steam did not accept that code. Check the SMS and try again."
+            )
+        }
         return .ready
     }
 
@@ -216,11 +227,22 @@ public final class AuthenticatorLinker {
             let wantMore = (response["want_more"] as? Bool) ?? false
 
             if status == 89 { return .badSMSCode }
-            if status == 88, attempt >= 9 { return .unableToGenerateCorrectCodes }
+
+            if status == 88 {
+                // A code mismatch. Retrying inside the same 30-second window
+                // regenerates the identical code, so the old immediate retry
+                // burned all ten attempts on one code that Steam had already
+                // refused. Give it a couple of fresh windows, and past that the
+                // clock really is wrong.
+                guard attempt < 2 else { return .unableToGenerateCorrectCodes }
+                try await waitForNextCodeWindow()
+                continue
+            }
 
             if wantMore {
-                // Wait out the current window so the next code differs.
-                try await Task.sleep(nanoseconds: 2_000_000_000)
+                // Same reasoning: a flat two-second sleep usually stayed inside
+                // the current window and sent Steam the same code again.
+                try await waitForNextCodeWindow()
                 continue
             }
             if success {
@@ -229,6 +251,13 @@ public final class AuthenticatorLinker {
             }
         }
         return .unableToGenerateCorrectCodes
+    }
+
+    /// Sleeps until the current 30-second code window has rolled over, so the
+    /// next generated code is genuinely a different one.
+    private func waitForNextCodeWindow() async throws {
+        let remaining = await SteamTime.shared.secondsRemaining()
+        try await Task.sleep(nanoseconds: UInt64(max(1, remaining)) * 1_000_000_000)
     }
 
     // MARK: - Removal
