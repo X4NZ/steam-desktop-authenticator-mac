@@ -386,3 +386,128 @@ struct ResponseCheckingTests {
         try SteamWeb.check(response(status: 200))
     }
 }
+
+/// Third pass: defects found reviewing the second pass's own fixes.
+struct ThirdReviewTests {
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sda-rev3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func account(_ name: String, steamID: UInt64) -> SteamGuardAccount {
+        var account = SteamGuardAccount()
+        account.accountName = name
+        account.sharedSecret = "zvIayp3JPvtvX/QGHqsqKBk/44s="
+        account.session = SessionData(steamID: steamID)
+        return account
+    }
+
+    @Test("A length just under Int.max is rejected without trapping")
+    func lengthNearIntMaxIsRejected() {
+        // Int(exactly:) admits this, and `offset + count` then overflowed. The
+        // leading varint matters: it leaves offset non-zero at the bad field.
+        var bytes: [UInt8] = [0x08, 0x2A, 0x12]
+        bytes += [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F] // Int.max
+
+        let message = ProtoMessage(Data(bytes))
+        #expect(message.varint(1) == 42)
+        #expect(message.bytes(2) == nil)
+    }
+
+    @Test("Every oversized length is rejected, whatever the offset")
+    func oversizedLengthsAtAnyOffsetAreRejected() {
+        let lengths: [[UInt8]] = [
+            [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01], // UInt64.max
+            [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F],       // Int.max
+            [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x40],       // 2^62
+            [0xFF, 0xFF, 0xFF, 0xFF, 0x0F],                               // 2^32-1
+        ]
+
+        for length in lengths {
+            for padding in 0 ... 3 {
+                var bytes = [UInt8](repeating: 0x08, count: 0)
+                for _ in 0 ..< padding { bytes += [0x08, 0x01] }
+                bytes += [0x12] + length
+                #expect(ProtoMessage(Data(bytes)).bytes(2) == nil)
+            }
+        }
+    }
+
+    @Test("A passphrase change is refused while a maFile is unreadable")
+    func reKeyingRefusesWithAMissingFile() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        for steamID in UInt64(1) ... 2 {
+            try store.save(account("account\(steamID)", steamID: steamID), passphrase: nil)
+        }
+        try store.changeEncryption(currentPassphrase: nil, newPassphrase: "first")
+
+        // An iCloud maFile that has not finished downloading reads as absent.
+        let away = directory.appendingPathComponent("2.maFile.stashed")
+        try FileManager.default.moveItem(
+            at: directory.appendingPathComponent("2.maFile"), to: away
+        )
+
+        // Re-keying used to carry on, leaving that entry with its old salt.
+        #expect(throws: StoreError.self) {
+            try store.changeEncryption(currentPassphrase: "first", newPassphrase: "second")
+        }
+
+        // It comes back, and the original passphrase still opens everything.
+        try FileManager.default.moveItem(
+            at: away, to: directory.appendingPathComponent("2.maFile")
+        )
+        let reopened = AccountStore(directory: directory)
+        try reopened.loadManifest()
+        #expect(try reopened.loadAccounts(passphrase: "first").count == 2)
+    }
+
+    @Test("missingFiles describes the load that just ran, not an older one")
+    func missingFilesIsNotStale() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AccountStore(directory: directory)
+        try store.loadManifest()
+        try store.save(account("alice", steamID: 1), passphrase: nil)
+        try store.save(account("bob", steamID: 2), passphrase: nil)
+        try store.changeEncryption(currentPassphrase: nil, newPassphrase: "right")
+
+        let away = directory.appendingPathComponent("2.maFile.stashed")
+        try FileManager.default.moveItem(
+            at: directory.appendingPathComponent("2.maFile"), to: away
+        )
+        _ = try store.loadAccounts(passphrase: "right")
+        #expect(store.missingFiles == ["2.maFile"])
+
+        // Put it back and load with the wrong passphrase, which throws part way.
+        try FileManager.default.moveItem(
+            at: away, to: directory.appendingPathComponent("2.maFile")
+        )
+        #expect(throws: Error.self) { try store.loadAccounts(passphrase: "wrong") }
+        #expect(store.missingFiles.isEmpty, "a failed load must not keep the old list")
+    }
+
+    @Test("Form-encoded requests judge only the HTTP status")
+    func formRequestsIgnoreEresult() throws {
+        // AddAuthenticator reports status 2 and 29 in the body as expected
+        // outcomes. Enforcing x-eresult here made those branches unreachable.
+        let url = URL(string: "https://api.steampowered.com/x")!
+        let withEresult = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/2",
+            headerFields: ["x-eresult": "2"]
+        )!
+        try SteamWeb.checkStatus(withEresult)
+
+        let serverError = HTTPURLResponse(
+            url: url, statusCode: 503, httpVersion: "HTTP/2", headerFields: [:]
+        )!
+        #expect(throws: SteamError.self) { try SteamWeb.checkStatus(serverError) }
+    }
+}

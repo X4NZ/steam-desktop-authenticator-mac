@@ -143,7 +143,10 @@ public enum SteamWeb {
 
     private static func perform(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await send(request)
-        try check(response)
+        // Status only. The form-encoded endpoints report outcomes in the body —
+        // AddAuthenticator's status 2 and 29 are expected results, not errors —
+        // so enforcing x-eresult here made those branches unreachable.
+        try checkStatus(response)
         return data
     }
 
@@ -169,6 +172,12 @@ public enum SteamWeb {
             return
         }
 
+        try checkStatus(response)
+    }
+
+    /// The transport-level check, with no view on what Steam put in the body.
+    static func checkStatus(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else { return }
         guard (200 ..< 300).contains(http.statusCode) else {
             throw SteamError.httpStatus(http.statusCode)
         }

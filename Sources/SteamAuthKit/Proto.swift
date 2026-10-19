@@ -162,8 +162,9 @@ private struct ProtoCursor {
         case .fixed32:
             return readFixed(4).map { .fixed32($0.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }) }
         case .lengthDelimited:
-            // Int(length) would trap on a length past Int.max, which is a crash
-            // reachable from any malformed response Steam or a proxy returns.
+            // Int(length) would trap outright on a length past Int.max. Values
+            // below it still have to be range-checked without arithmetic, which
+            // readFixed does — see the guard there.
             guard let length = readVarint(),
                   let count = Int(exactly: length),
                   let payload = readFixed(count)
@@ -188,7 +189,11 @@ private struct ProtoCursor {
     }
 
     private mutating func readFixed(_ count: Int) -> Data? {
-        guard count >= 0, offset + count <= data.count else { return nil }
+        // Subtraction, not `offset + count <= data.count`: that addition
+        // overflows and traps for a count anywhere near Int.max, which a
+        // malformed length field can ask for. Both sides here are
+        // non-negative, since offset never passes data.count.
+        guard count >= 0, count <= data.count - offset else { return nil }
         let start = data.startIndex + offset
         offset += count
         return Data(data[start ..< start + count])

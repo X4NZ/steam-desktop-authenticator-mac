@@ -16,6 +16,10 @@ final class AppModel: ObservableObject {
         case unlocked
         /// No accounts yet, so there is nothing to unlock.
         case empty
+        /// The store exists but could not be read. Distinct from .empty on
+        /// purpose: the welcome screen's main action links a new authenticator,
+        /// which would invalidate the secrets sitting unreadable on disk.
+        case failed(String)
     }
 
     // MARK: Published state
@@ -67,6 +71,8 @@ final class AppModel: ObservableObject {
     private var lastAlignCheck = Date()
     /// Guards against a slow check still running when the timer fires again.
     private var isRunningPeriodicCheck = false
+    /// Why the last unlock attempt failed, for the failure screen.
+    private var lastUnlockError: String?
     /// Replaces the previous banner's dismissal task rather than stacking one
     /// sleeping task per banner.
     private var bannerDismissTask: Task<Void, Never>?
@@ -122,9 +128,9 @@ final class AppModel: ObservableObject {
             }
         } else if !unlock(passphrase: nil, remember: false) {
             // unlock() sets the state itself when it works. Forcing .unlocked
-            // regardless used to paper over a failed load, leaving an empty
-            // main window with nothing explaining why.
-            lockState = .empty
+            // regardless used to paper over a failed load; sending it to .empty
+            // instead offered to set up a new account over the top of it.
+            lockState = .failed(lastUnlockError ?? "Your maFiles could not be read.")
         }
 
         startCodeTimer()
@@ -207,9 +213,17 @@ final class AppModel: ObservableObject {
             }
             return true
         } catch {
-            if case StoreError.accountFilesMissing = error {
-                show(.error, error.localizedDescription)
+            lastUnlockError = error.localizedDescription
+
+            // A wrong or absent passphrase is reported inline by the unlock
+            // screen. Everything else used to vanish entirely.
+            if case CryptoError.wrongPassword = error {
+                return false
             }
+            if case StoreError.passphraseRequired = error {
+                return false
+            }
+            show(.error, error.localizedDescription)
             return false
         }
     }
@@ -403,17 +417,25 @@ final class AppModel: ObservableObject {
             } else {
                 try await account.deny(confirmation)
             }
-            guard isStillSelected(owner) else { return }
-            confirmations.removeAll { $0.id == confirmation.id }
-            pendingCounts[owner] = confirmations.count
-            show(.success, accept ? "Confirmed." : "Cancelled.")
+            if isStillSelected(owner) {
+                confirmations.removeAll { $0.id == confirmation.id }
+                pendingCounts[owner] = confirmations.count
+                show(.success, accept ? "Confirmed." : "Cancelled.")
+            } else {
+                // Steam accepted it even though the user has moved on, so the
+                // badge must stop advertising it. Only the visible list and the
+                // banner depend on what is selected.
+                pendingCounts[owner] = max(0, (pendingCounts[owner] ?? 1) - 1)
+            }
         } catch {
-            show(.error, error.localizedDescription)
+            // Worth surfacing only while they are still looking at it.
+            if isStillSelected(owner) { show(.error, error.localizedDescription) }
         }
     }
 
     func actOnAll(accept: Bool) async {
         guard let account = selectedAccount, !confirmations.isEmpty else { return }
+        let owner = account.id
         let all = confirmations
         do {
             if accept {
@@ -421,11 +443,13 @@ final class AppModel: ObservableObject {
             } else {
                 try await account.deny(all)
             }
+            // Owner-keyed, so it holds whether or not the selection moved.
+            pendingCounts[owner] = 0
+            guard isStillSelected(owner) else { return }
             confirmations = []
-            pendingCounts[account.id] = 0
             show(.success, accept ? "Confirmed \(all.count)." : "Cancelled \(all.count).")
         } catch {
-            show(.error, error.localizedDescription)
+            if isStillSelected(owner) { show(.error, error.localizedDescription) }
         }
     }
 

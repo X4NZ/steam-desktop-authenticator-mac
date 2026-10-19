@@ -76,6 +76,7 @@ public struct Manifest: Codable, Sendable {
 public enum StoreError: LocalizedError {
     case manifestUnreadable
     case accountFilesMissing([String])
+    case cannotReEncryptWithMissingFiles([String])
     case notEncryptedButPassphraseGiven
     case passphraseRequired
     case accountHasNoSteamID
@@ -86,6 +87,12 @@ public enum StoreError: LocalizedError {
         switch self {
         case .manifestUnreadable:
             return "manifest.json could not be read. It may be corrupt; restore a backup of your maFiles folder."
+        case .cannotReEncryptWithMissingFiles(let names):
+            let listed = names.prefix(3).joined(separator: ", ")
+            let extra = names.count > 3 ? " and \(names.count - 3) more" : ""
+            return "\(listed)\(extra) could not be read, so the passphrase was left alone. "
+                + "Changing it now would leave those files unreadable for good. "
+                + "Restore them, or wait for them to finish downloading, and try again."
         case .accountFilesMissing(let names):
             let listed = names.prefix(3).joined(separator: ", ")
             let extra = names.count > 3 ? " and \(names.count - 3) more" : ""
@@ -226,6 +233,10 @@ public final class AccountStore {
             throw StoreError.passphraseRequired
         }
 
+        // Reset up front: assigning only at the end left the last successful
+        // load's list in place when this one threw part way through.
+        missingFiles = []
+
         var accounts = [SteamGuardAccount]()
         var missing = [String]()
 
@@ -350,6 +361,16 @@ public final class AccountStore {
     /// single passphrase could then open.
     public func changeEncryption(currentPassphrase: String?, newPassphrase: String?) throws {
         let accounts = try loadAccounts(passphrase: currentPassphrase)
+
+        // Reading tolerates a file that is missing right now; re-keying cannot.
+        // Only the accounts that loaded get new salts, so the absent entry
+        // would keep its old one and stop opening for good the moment the file
+        // came back — an iCloud maFile that had not finished downloading was
+        // enough to lose it.
+        guard missingFiles.isEmpty else {
+            throw StoreError.cannotReEncryptWithMissingFiles(missingFiles)
+        }
+
         let encrypt = (newPassphrase?.isEmpty == false)
 
         var staged: [(entry: ManifestEntry, temporary: URL, final: URL)] = []

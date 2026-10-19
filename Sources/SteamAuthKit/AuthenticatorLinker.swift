@@ -126,7 +126,12 @@ public final class AuthenticatorLinker {
         // on into addAuthenticator and failed there with something unrelated.
         // The account's own phone status is the answer that cannot be faked by
         // a 200 with an empty body.
-        let status = try await phoneStatus()
+        // A failure of this check is not the same as the code being wrong: the
+        // verification may well have gone through, and the code is single use,
+        // so reporting rejection would strand the user with a verified phone
+        // and a code they cannot send again. Only a definite "still
+        // unverified" counts as a rejection.
+        guard let status = try? await phoneStatus() else { return .ready }
         guard status.verified else {
             throw SteamError.loginFailed(
                 "Steam did not accept that code. Check the SMS and try again."
@@ -204,6 +209,11 @@ public final class AuthenticatorLinker {
         guard let account = linkedAccount else { throw SteamError.badResponse }
         let code = smsCode.trimmingCharacters(in: .whitespaces)
 
+        // Waiting for a fresh code window is right, but ten of them is up to
+        // five minutes behind a bare spinner. Three windows is enough for the
+        // couple of codes Steam actually asks for.
+        let deadline = Date().addingTimeInterval(90)
+
         for attempt in 0 ..< 10 {
             let time = await SteamTime.shared.currentTime()
             guard let authenticatorCode = account.generateCode(forTime: time) else {
@@ -234,7 +244,9 @@ public final class AuthenticatorLinker {
                 // burned all ten attempts on one code that Steam had already
                 // refused. Give it a couple of fresh windows, and past that the
                 // clock really is wrong.
-                guard attempt < 2 else { return .unableToGenerateCorrectCodes }
+                guard attempt < 2, Date() < deadline else {
+                    return .unableToGenerateCorrectCodes
+                }
                 try await waitForNextCodeWindow()
                 continue
             }
@@ -242,6 +254,7 @@ public final class AuthenticatorLinker {
             if wantMore {
                 // Same reasoning: a flat two-second sleep usually stayed inside
                 // the current window and sent Steam the same code again.
+                guard Date() < deadline else { return .unableToGenerateCorrectCodes }
                 try await waitForNextCodeWindow()
                 continue
             }
