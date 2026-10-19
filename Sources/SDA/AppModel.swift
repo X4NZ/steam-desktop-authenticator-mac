@@ -275,8 +275,11 @@ final class AppModel: ObservableObject {
     /// Checks a passphrase against the stored files without changing anything.
     func verifyPassphrase(_ candidate: String) -> Bool {
         let verified = store.verify(passphrase: candidate)
-        // verify() runs a whole load, so the store's diagnostics moved.
-        unreadableFiles = store.unreadableFiles
+        // verify() runs a whole load, so the store's diagnostics moved. Only
+        // a successful one is worth publishing: a typo clears the damage list
+        // without repopulating it, which would hide the panel that offers the
+        // only route to dropping a damaged entry.
+        if verified { unreadableFiles = store.unreadableFiles }
         return verified
     }
 

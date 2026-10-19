@@ -251,6 +251,8 @@ public final class AccountStore {
         var accounts = [SteamGuardAccount]()
         var missing = [String]()
         var damaged = [String]()
+        /// Damaged in a way no passphrase could explain.
+        var structurallyDamaged = [String]()
         var decryptedSomething = false
 
         for entry in manifest.entries {
@@ -262,6 +264,17 @@ public final class AccountStore {
 
             let json: Data
             if let salt = entry.salt, let iv = entry.iv, let passphrase, !passphrase.isEmpty {
+                // Structural damage is provable without the key: no passphrase,
+                // right or wrong, changes the bytes on disk. Separating it here
+                // is what lets a lone corrupt file be named as corrupt instead
+                // of being reported forever as a wrong passphrase.
+                guard FileEncryptor.isWellFormed(
+                    ciphertext: String(decoding: data, as: UTF8.self)
+                ) else {
+                    structurallyDamaged.append(entry.filename)
+                    continue
+                }
+
                 guard let plaintext = try? FileEncryptor.decrypt(
                     ciphertext: String(decoding: data, as: UTF8.self),
                     passphrase: passphrase,
@@ -290,14 +303,17 @@ public final class AccountStore {
 
         missingFiles = missing
 
-        // A wrong passphrase makes every encrypted file look damaged. That
-        // list must not escape: the interface offers to drop the manifest
-        // entries for unreadable files, and encryption_salt lives nowhere
-        // else, so acting on it after a single typo would leave ciphertext on
-        // disk that nothing can ever decrypt again. Damage is reported only
-        // once some file has opened and proved the passphrase right.
+        // A wrong passphrase makes every encrypted file merely fail to
+        // decrypt. That list must not escape on its own: the interface offers
+        // to drop the manifest entries for unreadable files, and
+        // encryption_salt lives nowhere else, so acting on it after a single
+        // typo would leave ciphertext on disk that nothing can ever decrypt
+        // again. So failures that only a key could explain are reported once
+        // some file has opened and proved the passphrase right, while
+        // structural damage is reported always, being provable without one.
+        damagedFiles = structurallyDamaged
         if !manifest.encrypted || decryptedSomething {
-            damagedFiles = damaged
+            damagedFiles += damaged
         }
 
         // A file that will not open says something about the passphrase only
@@ -309,11 +325,13 @@ public final class AccountStore {
         // The remaining ambiguity is a store whose every file fails: that is
         // reported as a wrong passphrase, because a typo is far likelier than
         // the whole folder rotting at once.
+        // Only a failure a key could explain is evidence about the key;
+        // structural damage must not be dressed up as a wrong passphrase.
         if manifest.encrypted, !decryptedSomething, !damaged.isEmpty {
             throw CryptoError.wrongPassword
         }
-        if accounts.isEmpty, !damaged.isEmpty {
-            throw StoreError.accountFilesDamaged(damaged)
+        if accounts.isEmpty, !damagedFiles.isEmpty {
+            throw StoreError.accountFilesDamaged(damagedFiles)
         }
         if accounts.isEmpty, !missing.isEmpty {
             throw StoreError.accountFilesMissing(missing)
@@ -387,9 +405,15 @@ public final class AccountStore {
         guard !dropped.isEmpty else { return [] }
 
         // The salts for every remaining account live in this file and nowhere
-        // else, so an irreversible edit to it gets a copy kept beside it.
+        // else, so an irreversible edit to it keeps a copy beside it — through
+        // write(_:to:), so the copy is owner-only like the original, and
+        // without try?, because dropping the entries when the copy failed
+        // would defeat the whole point of making one.
         if let current = try? Data(contentsOf: manifestURL) {
-            try? current.write(to: directory.appendingPathComponent("manifest.json.bak"))
+            let backup = directory.appendingPathComponent(
+                "manifest.json.\(Int(Date().timeIntervalSince1970)).bak"
+            )
+            try write(current, to: backup)
         }
 
         manifest.entries.removeAll { dropped.contains($0.filename) }

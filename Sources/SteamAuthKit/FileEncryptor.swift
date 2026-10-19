@@ -51,6 +51,18 @@ public enum FileEncryptor {
         return ciphertext.base64EncodedString()
     }
 
+    /// Whether this is even shaped like something we wrote.
+    ///
+    /// A wrong passphrase never alters the file's bytes, so ciphertext that is
+    /// not valid base64 is damaged no matter what passphrase is offered. That
+    /// makes this the one check that can tell the two apart.
+    public static func isWellFormed(ciphertext: String) -> Bool {
+        let trimmed = ciphertext.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = Data(base64Encoded: trimmed) else { return false }
+        // AES-CBC output is whole blocks, and PKCS#7 means at least one.
+        return data.count >= ivLength && data.count % ivLength == 0
+    }
+
     public static func decrypt(
         ciphertext: String,
         passphrase: String,

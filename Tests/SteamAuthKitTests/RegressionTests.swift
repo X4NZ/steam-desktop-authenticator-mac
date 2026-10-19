@@ -693,17 +693,34 @@ struct FifthReviewTests {
         #expect(store.damagedFiles == ["2.maFile"])
     }
 
-    @Test("A single damaged file is not reported as damage it cannot prove")
-    func loneDamagedFileStaysAmbiguous() throws {
+    @Test("A lone structurally damaged file is named, not blamed on the key")
+    func loneStructuralDamageIsNamed() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try encryptedStore(directory, count: 1, passphrase: "correct")
 
+        // Not valid base64, which no passphrase could have caused.
         try Data("ruined".utf8).write(to: directory.appendingPathComponent("1.maFile"))
 
-        // Nothing opened, so this is indistinguishable from a wrong
-        // passphrase. It must resolve towards safety: no damage list, so
-        // nothing offers to delete the entry.
+        // This used to report the correct passphrase as wrong, with no way to
+        // reach the entry and no way to re-key the store ever again.
+        #expect(throws: StoreError.self) { try store.loadAccounts(passphrase: "correct") }
+        #expect(store.damagedFiles == ["1.maFile"])
+    }
+
+    @Test("A lone undecryptable file stays ambiguous")
+    func loneKeyFailureStaysAmbiguous() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try encryptedStore(directory, count: 1, passphrase: "correct")
+
+        // Well-formed ciphertext that simply will not decrypt. Nothing opened,
+        // so this is genuinely indistinguishable from a typo, and it has to
+        // resolve towards leaving the data alone: no damage list, so nothing
+        // offers to drop the entry that holds the only copy of its salt.
+        let plausible = Crypto.randomBytes(32).base64EncodedString()
+        try Data(plausible.utf8).write(to: directory.appendingPathComponent("1.maFile"))
+
         #expect(throws: CryptoError.self) { try store.loadAccounts(passphrase: "correct") }
         #expect(store.damagedFiles.isEmpty)
         #expect(try store.forgetUnreadableEntries().isEmpty)
@@ -719,9 +736,15 @@ struct FifthReviewTests {
         _ = try store.loadAccounts(passphrase: "first")
         _ = try store.forgetUnreadableEntries()
 
-        // The dropped entry's salt is only recoverable from this copy.
-        let backup = directory.appendingPathComponent("manifest.json.bak")
-        #expect(FileManager.default.fileExists(atPath: backup.path))
+        // The dropped entry's salt is only recoverable from this copy, which
+        // is timestamped so a second drop cannot overwrite the first.
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        let backups = names.filter { $0.hasPrefix("manifest.json.") && $0.hasSuffix(".bak") }
+        #expect(backups.count == 1)
+
+        let backup = directory.appendingPathComponent(backups[0])
+        let mode = try FileManager.default.attributesOfItem(atPath: backup.path)[.posixPermissions]
+        #expect((mode as? NSNumber)?.int16Value == 0o600, "it holds every remaining salt")
 
         let previous = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: backup))
         #expect(previous.entries.count == 2)
