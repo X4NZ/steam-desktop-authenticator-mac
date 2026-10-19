@@ -103,8 +103,17 @@ struct UnlockView: View {
         biometricsRunning = true
         defer { biometricsRunning = false }
 
-        if await model.unlockWithBiometrics() { return }
-        // Cancelled or failed: leave the button so they can try again.
+        switch await model.unlockWithBiometrics() {
+        case .unlocked:
+            break
+        case .needsPassphrase:
+            // The prompt's cancel button says "Enter Passphrase", so it has to
+            // actually get them there.
+            showPassphraseEntry = true
+            focused = true
+        case .retry:
+            break // The button stays, so they can ask for the prompt again.
+        }
     }
 
     private func attemptUnlock() {

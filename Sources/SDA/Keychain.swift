@@ -23,7 +23,12 @@ enum Keychain {
     enum KeychainError: LocalizedError {
         case notFound
         case authenticationFailed
-        case cancelled
+        /// The user dismissed the prompt themselves. Its cancel button offers
+        /// the passphrase, so the caller is expected to show that instead.
+        case declined
+        /// Something other than the user took the prompt away, so re-offering
+        /// it is the right response rather than falling back.
+        case interrupted
         case unavailable(String)
 
         var errorDescription: String? {
@@ -32,8 +37,8 @@ enum Keychain {
                 return "No passphrase is saved on this Mac."
             case .authenticationFailed:
                 return "\(biometryLabel) did not confirm it was you."
-            case .cancelled:
-                return nil // The user chose to back out; nothing to report.
+            case .declined, .interrupted:
+                return nil // Not a failure worth reporting.
             case .unavailable(let detail):
                 return detail
             }
@@ -181,8 +186,12 @@ enum Keychain {
                 context = authContext
             } catch let error as LAError {
                 switch error.code {
-                case .userCancel, .appCancel, .systemCancel, .userFallback:
-                    return .failure(.cancelled)
+                case .userCancel, .userFallback:
+                    // The cancel button is labelled "Enter Passphrase", so
+                    // dismissing the prompt is a request for the other route.
+                    return .failure(.declined)
+                case .appCancel, .systemCancel:
+                    return .failure(.interrupted)
                 case .biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet:
                     return .failure(.unavailable(
                         "\(biometryLabel) is not set up on this Mac. Enter your passphrase instead."

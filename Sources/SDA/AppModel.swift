@@ -198,11 +198,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// What the unlock screen should do after a biometric attempt.
+    enum BiometricOutcome {
+        case unlocked
+        /// Offer the passphrase field: either the user asked for it, or
+        /// biometrics cannot serve here at all.
+        case needsPassphrase
+        /// Leave the prompt on offer so they can try again.
+        case retry
+    }
+
     /// Asks for Touch ID, then unlocks with the stored passphrase.
-    ///
-    /// Returns false when there is nothing stored or the user backed out, so the
-    /// unlock screen can fall back to asking for the passphrase.
-    func unlockWithBiometrics() async -> Bool {
+    func unlockWithBiometrics() async -> BiometricOutcome {
         let result = await Keychain.load(
             reason: "unlock your Steam authenticator accounts"
         )
@@ -211,15 +218,22 @@ final class AppModel: ObservableObject {
         case .success(let passphrase):
             if unlock(passphrase: passphrase, remember: false) {
                 lockState = .unlocked
-                return true
+                return .unlocked
             }
-            // The stored passphrase no longer matches the files.
+            // The stored passphrase no longer matches the files, so biometrics
+            // cannot open them however many times it is tried.
             show(.error, "The saved passphrase did not unlock your maFiles.")
-            return false
+            return .needsPassphrase
 
         case .failure(let error):
             if let message = error.errorDescription { show(.error, message) }
-            return false
+
+            switch error {
+            case .declined, .notFound, .unavailable:
+                return .needsPassphrase
+            case .interrupted, .authenticationFailed:
+                return .retry
+            }
         }
     }
 
