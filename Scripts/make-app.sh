@@ -48,6 +48,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSSupportsAutomaticTermination</key><false/>
     <key>NSSupportsSuddenTermination</key><false/>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+    <key>NSHumanReadableCopyright</key><string>Copyright (C) 2026 XanZ. Licensed under GPL-3.0-or-later.</string>
     <key>SDAUpdateRepository</key><string>${UPDATE_REPO}</string>
 </dict>
 </plist>

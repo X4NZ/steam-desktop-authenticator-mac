@@ -175,5 +175,20 @@ offset once at launch and applies it.
 
 ## Licence
 
-The upstream project is GPL-3.0. This is an independent implementation of the
-same protocols; treat it as GPL-3.0 as well.
+Copyright (C) 2026 XanZ
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. The full text is in [LICENSE](LICENSE).
+
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY,
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the licence for details.
+
+The code here is written from Steam's own protocols rather than ported from
+SDA, so GPL-3.0 is a choice and not an obligation — protocols and file formats
+are not themselves copyrightable. It is the choice because it matches both SDA
+and steamguard-cli, the latter being where the code-generation test vector
+comes from, and it keeps this app under the same terms as the projects it
+interoperates with.
