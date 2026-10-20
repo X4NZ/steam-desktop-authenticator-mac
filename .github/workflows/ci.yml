@@ -1,9 +1,17 @@
 name: CI
 
+# A commit that only touches prose does not change what `swift test` would say,
+# and macos runners are scarce enough that the job can sit in the queue for
+# minutes. The list is repeated rather than shared through a YAML anchor,
+# because the Actions parser does not support anchors. A run is skipped only
+# when *every* changed file matches, so a commit touching a doc and a source
+# file still runs.
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'LICENSE', '.gitignore']
   pull_request:
+    paths-ignore: ['**.md', 'LICENSE', '.gitignore']
 
 jobs:
   test:
