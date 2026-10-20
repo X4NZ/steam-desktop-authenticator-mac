@@ -148,7 +148,8 @@ rendered in base 26 over Steam's alphabet `23456789BCDFGHJKMNPQRTVWXY` rather
 than in decimal.
 
 **Login** is the one place SDA leans on a library this app cannot use
-(SteamKit2). Steam's `IAuthenticationService` speaks protobuf only, so rather
+([SteamKit2](https://github.com/SteamRE/SteamKit)). Steam's
+`IAuthenticationService` speaks protobuf only, so rather
 than take a protobuf dependency and a codegen step for four messages, `Proto.swift`
 implements the three wire types those messages need in about 200 lines.
 
@@ -166,10 +167,27 @@ offset once at launch and applies it.
 `swift test` covers the format-critical paths against vectors produced
 *outside* this codebase, so they pin behaviour rather than restate it:
 
-- the code-generation vector comes from steamguard-cli's own test suite,
+- the code-generation vector comes from [steamguard-cli](https://github.com/dyc3/steamguard-cli)'s own test suite,
 - the PBKDF2 key from Python's `hashlib.pbkdf2_hmac`,
 - the AES ciphertext from `openssl enc`,
 - the protobuf byte strings were computed by hand from the wire-format spec.
+
+---
+
+## Credits
+
+This app is an independent implementation, not a port: no third-party source
+was copied into it. These are the projects it was built against, and what each
+one contributed.
+
+| Project | Licence | What it gave this app |
+| --- | --- | --- |
+| [Steam Desktop Authenticator](https://github.com/Jessecar96/SteamDesktopAuthenticator) by Jessecar96 | MIT | The thing being reimplemented. Its `maFile` and `manifest.json` layout and its PBKDF2/AES parameters are matched byte for byte so folders move between the two. No code taken. |
+| [steamguard-cli](https://github.com/dyc3/steamguard-cli) by dyc3 | GPL-3.0 | One code-generation test vector, used in `Tests/SteamAuthKitTests/CryptoTests.swift`. The only third-party material in this repository. |
+| [SteamKit](https://github.com/SteamRE/SteamKit) (SteamKit2) by SteamRE | LGPL-2.1 | Nothing, by necessity: it is the .NET library SDA delegates login to, which is why `SteamLogin.swift` and `Proto.swift` had to be written from the wire format instead. |
+
+Code generation follows [RFC 4226](https://www.rfc-editor.org/rfc/rfc4226)
+(HOTP), with Steam's base-26 alphabet substituted for decimal digits.
 
 ---
 
@@ -187,8 +205,9 @@ without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See the licence for details.
 
 The code here is written from Steam's own protocols rather than ported from
-SDA, so GPL-3.0 is a choice and not an obligation — protocols and file formats
-are not themselves copyrightable. It is the choice because it matches both SDA
-and steamguard-cli, the latter being where the code-generation test vector
-comes from, and it keeps this app under the same terms as the projects it
-interoperates with.
+SDA, and protocols and file formats are not themselves copyrightable, so this
+licence is not inherited from anything. It is chosen rather than required: the
+one piece of third-party material in the repository is a test vector from
+steamguard-cli, which is GPL-3.0, and copyleft keeps that unambiguous. Note
+that upstream SDA is MIT, not GPL-3.0, so nothing here obliged this choice —
+see [Credits](#credits).
