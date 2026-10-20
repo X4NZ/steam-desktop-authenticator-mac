@@ -176,15 +176,13 @@ offset once at launch and applies it.
 
 ## Credits
 
-This app is an independent implementation, not a port: no third-party source
-was copied into it. These are the projects it was built against, and what each
-one contributed.
+This app is an independent implementation, not a port. Two projects shaped it,
+and only one of them has anything of its own in this repository.
 
 | Project | Licence | What it gave this app |
 | --- | --- | --- |
 | [Steam Desktop Authenticator](https://github.com/Jessecar96/SteamDesktopAuthenticator) by Jessecar96 | MIT | The thing being reimplemented. Its `maFile` and `manifest.json` layout and its PBKDF2/AES parameters are matched byte for byte so folders move between the two. No code taken. |
 | [steamguard-cli](https://github.com/dyc3/steamguard-cli) by dyc3 | GPL-3.0 | One code-generation test vector, used in `Tests/SteamAuthKitTests/CryptoTests.swift`. The only third-party material in this repository. |
-| [SteamKit](https://github.com/SteamRE/SteamKit) (SteamKit2) by SteamRE | LGPL-2.1 | Nothing, by necessity: it is the .NET library SDA delegates login to, which is why `SteamLogin.swift` and `Proto.swift` had to be written from the wire format instead. |
 
 Code generation follows [RFC 4226](https://www.rfc-editor.org/rfc/rfc4226)
 (HOTP), with Steam's base-26 alphabet substituted for decimal digits.
