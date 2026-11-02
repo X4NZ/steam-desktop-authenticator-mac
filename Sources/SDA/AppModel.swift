@@ -336,6 +336,35 @@ final class AppModel: ObservableObject {
         show(.success, "Code \(currentCode) copied.")
     }
 
+    /// Puts an account's shared secret on the pasteboard.
+    ///
+    /// The secret *is* the account: anything holding it generates that
+    /// account's codes forever, and unlike a password it cannot be changed
+    /// without removing the authenticator from Steam. So it is never rendered
+    /// on screen — copying is the only way it leaves the app — and the caller
+    /// is expected to have confirmed the person first when the store is
+    /// encrypted.
+    func copySharedSecret(for account: SteamGuardAccount) {
+        guard let secret = account.sharedSecret, !secret.isEmpty else {
+            show(.error, "This account has no shared secret stored.")
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(secret, forType: .string)
+        // Clipboard managers keep a plain-text history of everything copied.
+        // This type is the convention they watch for to leave an entry out of
+        // it; it costs nothing where nothing is listening.
+        NSPasteboard.general.setString(secret, forType: .init("org.nspasteboard.ConcealedType"))
+
+        show(
+            .warning,
+            "Shared secret for \(account.accountName ?? "this account") copied. "
+                + "Anything that reads your clipboard can now take the account, so paste it "
+                + "where you need it and copy something else afterwards."
+        )
+    }
+
     private func alignTime() async {
         await SteamTime.shared.align()
         steamTimeOffset = await SteamTime.shared.currentOffset

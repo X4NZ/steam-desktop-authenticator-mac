@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SteamAuthKit
 import Testing
@@ -8,6 +9,65 @@ import Testing
 /// test because the app target was not in any test target.
 @MainActor
 struct AppModelTests {
+
+    // MARK: - Copying the shared secret
+
+    @Test("Copying the shared secret puts it on the pasteboard")
+    func copySharedSecretWrites() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = AppModel(store: try store(directory, accounts: 1))
+        _ = model.unlock(passphrase: nil, remember: false)
+        let account = try #require(model.accounts.first)
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString("something else", forType: .string)
+
+        model.copySharedSecret(for: account)
+        #expect(pasteboard.string(forType: .string) == "zvIayp3JPvtvX/QGHqsqKBk/44s=")
+    }
+
+    /// Clipboard managers watch for this type to keep an entry out of their
+    /// plain-text history. A secret that cannot be changed without removing
+    /// the authenticator from Steam should not be sitting in one.
+    @Test("A copied secret is marked concealed for clipboard managers")
+    func copySharedSecretIsConcealed() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = AppModel(store: try store(directory, accounts: 1))
+        _ = model.unlock(passphrase: nil, remember: false)
+        let account = try #require(model.accounts.first)
+
+        NSPasteboard.general.clearContents()
+        model.copySharedSecret(for: account)
+
+        let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+        #expect(NSPasteboard.general.string(forType: concealed) != nil)
+    }
+
+    /// An account linked elsewhere and imported without its secret has nothing
+    /// to copy; saying so beats putting an empty string on the pasteboard and
+    /// reporting success.
+    @Test("An account with no secret reports it rather than copying nothing")
+    func copySharedSecretWithoutOne() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = AppModel(store: try store(directory, accounts: 1))
+        _ = model.unlock(passphrase: nil, remember: false)
+        var account = try #require(model.accounts.first)
+        account.sharedSecret = nil
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("untouched", forType: .string)
+
+        model.copySharedSecret(for: account)
+        #expect(NSPasteboard.general.string(forType: .string) == "untouched")
+        #expect(model.banner?.kind == .error)
+    }
 
     // MARK: - Fixtures
 

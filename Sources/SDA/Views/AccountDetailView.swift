@@ -269,6 +269,8 @@ struct AccountInfoPanel: View {
     let onForget: () -> Void
     let onReauthenticate: () -> Void
 
+    @State private var confirmingSecretCopy = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Account")
@@ -299,6 +301,24 @@ struct AccountInfoPanel: View {
                         }
                         .controlSize(.small)
                         .buttonStyle(.link)
+                    }
+                }
+
+                GridRow {
+                    Text("Shared secret")
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button("Copy") { copySharedSecret() }
+                            .controlSize(.small)
+                            .disabled(account.sharedSecret?.isEmpty != false)
+                        Text(
+                            model.isEncrypted
+                                ? "Asks for \(Keychain.presenceLabel) or your passphrase first."
+                                : "Whoever holds it can generate this account's codes."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
@@ -335,6 +355,26 @@ struct AccountInfoPanel: View {
         }
         .padding(16)
         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 14))
+        .sheet(isPresented: $confirmingSecretCopy) {
+            ConfirmIdentitySheet(
+                purpose: "copy the shared secret for \(account.accountName ?? "this account")"
+            ) {
+                model.copySharedSecret(for: account)
+            }
+            .environmentObject(model)
+        }
+    }
+
+    /// Encryption on means the person chose to put a lock between this secret
+    /// and the disk, so take that as applying to the pasteboard too. With it
+    /// off, the secret is already readable in the clear by anything that can
+    /// read the home folder, and a prompt here would only be theatre.
+    private func copySharedSecret() {
+        if model.isEncrypted {
+            confirmingSecretCopy = true
+        } else {
+            model.copySharedSecret(for: account)
+        }
     }
 }
 

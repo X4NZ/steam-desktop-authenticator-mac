@@ -55,6 +55,58 @@ enum Keychain {
         )
     }
 
+    /// True when the Mac can confirm the person is there at all — Touch ID if
+    /// it has it, the login password if it does not.
+    static var canConfirmPresence: Bool {
+        var error: NSError?
+        return LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: &error)
+    }
+
+    /// How to name the check in the interface, covering the Macs with no
+    /// biometric hardware, where this is the login password alone.
+    static var presenceLabel: String {
+        biometryAvailable ? biometryLabel : "your login password"
+    }
+
+    /// Asks the person to prove they are present, reading nothing from the
+    /// keychain.
+    ///
+    /// This is for a secret the app has already decrypted and holds in memory,
+    /// where the question is not "what is the key" but "is the person who
+    /// unlocked this still the one at the keyboard". `Keychain.load` cannot
+    /// serve: it needs a stored passphrase, and whether one exists is a
+    /// separate choice from whether a secret should leave the app.
+    static func confirmPresence(reason: String) async -> Result<Void, KeychainError> {
+        let context = LAContext()
+        context.localizedCancelTitle = "Enter Passphrase"
+
+        do {
+            // .deviceOwnerAuthentication, so a Mac without Touch ID — or a
+            // finger it will not read — falls through to the login password
+            // rather than leaving no way through.
+            let confirmed = try await context.evaluatePolicy(
+                .deviceOwnerAuthentication,
+                localizedReason: reason
+            )
+            return confirmed ? .success(()) : .failure(.authenticationFailed)
+        } catch let error as LAError {
+            switch error.code {
+            case .userCancel, .userFallback:
+                return .failure(.declined)
+            case .appCancel, .systemCancel:
+                return .failure(.interrupted)
+            case .biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet:
+                return .failure(.unavailable(
+                    "This Mac cannot confirm it is you. Enter your passphrase instead."
+                ))
+            default:
+                return .failure(.authenticationFailed)
+            }
+        } catch {
+            return .failure(.authenticationFailed)
+        }
+    }
+
     /// What to call it in the interface, since the hardware differs by Mac.
     static var biometryLabel: String {
         switch LAContext().biometryType {
